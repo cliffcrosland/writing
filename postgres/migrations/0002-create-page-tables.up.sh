@@ -4,26 +4,28 @@ SUFFIX=$1
 
 docker exec -i writing_postgres psql -U app -d app << EOF
 
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
 CREATE TABLE pages (
-  org_id bigint NOT NULL,
-  id bigserial NOT NULL,
+  org_id uuid NOT NULL,
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
   title text,
-  created_by_user_id bigint NOT NULL,
-  last_edited_by_user_id bigint NOT NULL,
-  project_owner_user_id bigint NOT NULL,
+  created_by_user_id uuid NOT NULL,
+  last_edited_by_user_id uuid NOT NULL,
+  project_owner_user_id uuid NOT NULL,
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
   PRIMARY KEY (org_id, id)
 );
 
 CREATE TABLE page_nodes (
-  org_id bigint NOT NULL,
-  page_id bigint NOT NULL,
-  id bigserial NOT NULL,
+  org_id uuid NOT NULL,
+  page_id uuid NOT NULL,
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
   kind int NOT NULL,
   content text,
   ordering double precision NOT NULL DEFAULT 0,
-  last_edited_by_user_id bigserial NOT NULL,
+  last_edited_by_user_id uuid NOT NULL,
   created_at TIMESTAMP NOT NULL,
   updated_at TIMESTAMP NOT NULL,
   PRIMARY KEY (org_id, id)
@@ -38,12 +40,12 @@ CREATE INDEX page_nodes_oid_pid_ord_knd_content
   (org_id, page_id, ordering, kind, content);
 
 CREATE TABLE page_updates (
-  org_id bigint NOT NULL,
-  page_id bigint NOT NULL,
-  id bigserial NOT NULL,
+  org_id uuid NOT NULL,
+  page_id uuid NOT NULL,
+  id uuid NOT NULL DEFAULT uuid_generate_v4(),
   update_message text NOT NULL,
   occurred_at TIMESTAMP NOT NULL,
-  by_user_id bigint NOT NULL,
+  by_user_id uuid NOT NULL,
   PRIMARY KEY (org_id, id)
 );
 

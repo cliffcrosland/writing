@@ -10,4 +10,6 @@ DROP INDEX page_nodes_oid_pid_ord_knd_content;
 DROP TABLE page_nodes;
 DROP TABLE pages;
 
+DROP EXTENSION IF EXISTS "uuid-ossp";
+
 EOF

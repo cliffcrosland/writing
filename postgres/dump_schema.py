@@ -9,30 +9,50 @@ import sys
 
 def add_definition(definition, definitions):
     d = definition
-    if d[0].find('CREATE TABLE') != -1:
+    if 'CREATE TABLE' in d[0]:
         d[0] = re.sub(r'CREATE TABLE public.', 'CREATE TABLE ', d[0])
         table_name = d[0].strip().split(' ')[2]
         definitions.setdefault(table_name, {})['table'] = '\n'.join(d)
-    elif d[0].find('CREATE') != -1 and d[0].find('INDEX') != -1:
+    elif 'CREATE' in d[0] and 'INDEX' in d[0]:
         d[0] = re.sub(r' ON public.', ' ON ', d[0])
         words = d[0].split(' ')
         index_name = words[words.index('INDEX') + 1]
         table_name = words[words.index('ON') + 1]
         definitions.setdefault(table_name, {}).setdefault('indexes', []).append((index_name, '\n'.join(d)))
+    elif 'ALTER TABLE' in d[0] and 'PRIMARY KEY' in d[1]:
+        d[0] = re.sub(r' public.', ' ', d[0]).rstrip()
+        words = d[0].split(' ')
+        table_name = words[-1]
+        definitions.setdefault(table_name, {})['primary_key'] = '\n'.join(d)
     else:
         print('Unknown d type: {}'.format('\n'.join(definition)))
         exit(1)
+
+
+def creating_table(line):
+    return 'CREATE TABLE' in line
+
+
+def creating_index(line):
+    return 'CREATE' in line and 'INDEX' in line
+
+
+def creating_primary_key_constraint(lines, i):
+    if i == len(lines) - 1:
+        return False
+    return ('ALTER TABLE' in lines[i] and
+            'ADD CONSTRAINT' in lines[i + 1] and
+            'PRIMARY KEY' in lines[i + 1])
 
 
 def parse_definitions(lines):
     definition = []
     definitions = {}
     seeking = True
-    for line in lines:
+    for i, line in enumerate(lines):
         if seeking:
-            if line.find('CREATE') == -1:
-                continue
-            elif line.find('TABLE') != -1 or line.find('INDEX') != -1:
+            # Look for tables, indexes, or primary key constraints
+            if creating_table(line) or creating_index(line) or creating_primary_key_constraint(lines, i):
                 seeking = False
                 definition.append(line)
         else:
@@ -86,13 +106,16 @@ def dump_schema_to_file(schema_file_path):
             if first:
                 first = False
             else:
-                f.write("\n\n")
+                f.write("\n")
             table = definitions[key]['table']
             f.write(table)
-            f.write("\n")
+            f.write("\n\n")
+            primary_key = definitions[key]['primary_key']
+            f.write(primary_key)
+            f.write("\n\n")
             for (_, index) in definitions[key].get('indexes', []):
                 f.write(index)
-                f.write("\n")
+                f.write("\n\n")
     print('Done.')
     print('Database schema written to:')
     print(schema_file_path)
