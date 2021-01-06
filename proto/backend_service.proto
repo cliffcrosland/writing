@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+import "page.proto";
+
+package writing;
+
+service BackendService {
+  rpc CreatePage(CreatePageRequest) returns (CreatePageResponse);
+  rpc UpdatePageTitle(UpdatePageTitleRequest) returns (UpdatePageTitleResponse);
+  rpc LoadPage(LoadPageRequest) returns (LoadPageResponse);
+  rpc InsertPageNode(InsertPageNodeRequest) returns (InsertPageNodeResponse);
+  rpc UpdatePageNode(UpdatePageNodeRequest) returns (UpdatePageNodeResponse);
+  rpc DeletePageNode(DeletePageNodeRequest) returns (DeletePageNodeResponse);
+}

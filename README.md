@@ -14,8 +14,6 @@ If the product makes it easy to write well, teams who use it will do better
 work.
 
 ## Todos
-- Establish the Postgres schema for users.
-- Create the Rust backend project.
 - Create a GRPC server that supports writing operations.
 - Create the frontend project. Decide whether to focus on performance with
   Mikado or play it safe with React.

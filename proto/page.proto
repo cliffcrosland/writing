@@ -1,14 +1,16 @@
 syntax = "proto3";
 
+package writing;
+
 // A page is an ordered list of page nodes. A page node has a kind and content.
 
 message Page {
-  int64 org_id = 1;
-  int64 id = 2;
+  string org_id = 1;
+  string id = 2;
   string title = 3;
-  int64 created_by_user_id = 4;
-  int64 last_edited_by_user_id = 5;
-  int64 project_owner_user_id = 6;
+  string created_by_user_id = 4;
+  string last_edited_by_user_id = 5;
+  string project_owner_user_id = 6;
   int64 created_at = 7;
   int64 updated_at = 8;
 }
@@ -23,42 +25,85 @@ message PageNode {
     CODE = 5;
   }
 
-  int64 org_id = 1;
-  int64 page_id = 2;
-  int64 id = 3;
+  string org_id = 1;
+  string page_id = 2;
+  string id = 3;
   PageNode.Kind kind = 4;
   string content = 5;
   double ordering = 6;
-  int64 last_edited_by_user_id = 7;
+  string last_edited_by_user_id = 7;
 }
 
-// Updates:
+// Page requests
+message CreatePageRequest {
+  string org_id = 1;
+  string by_user_id = 2;
+  string title = 3;
+}
 
-message InsertPageNode {
-  int64 org_id = 1;
-  int64 page_id = 2;
-  // Semantically, a value of -1 here means that we want to append the node to
-  // the end of document.
-  int64 before_page_node_id = 3;
-  int64 by_user_id = 4;
+message CreatePageResponse {
+  Page page = 1;
+}
+
+message UpdatePageTitleRequest {
+  string org_id = 1;
+  string page_id = 2;
+  string by_user_id = 3;
+  string new_title = 4;
+}
+
+message UpdatePageTitleResponse {
+}
+
+message LoadPageRequest {
+  string org_id = 1;
+  string page_id = 2;
+}
+
+message LoadPageResponse {
+  Page page = 1;
+  repeated PageNode initial_page_nodes = 2;
+}
+
+// Page Node edits:
+
+message InsertPageNodeRequest {
+  string org_id = 1;
+  string page_id = 2;
+  // Semantically, an empty string value here means that we want to append the
+  // node to the end of document.
+  string before_page_node_id = 3;
+  string by_user_id = 4;
   PageNode.Kind kind = 5;
   string content = 6;
 }
 
-message UpdatePageNode {
-  int64 org_id = 1;
-  int64 page_id = 2;
-  int64 page_node_id = 3;
-  int64 by_user_id = 4;
+message InsertPageNodeResponse {
+  string org_id = 1;
+  string page_id = 2;
+  string page_node_id = 3;
+}
+
+message UpdatePageNodeRequest {
+  string org_id = 1;
+  string page_id = 2;
+  string page_node_id = 3;
+  string by_user_id = 4;
   bool kind_changed = 5;
   PageNode.Kind new_kind = 6;
   bool content_changed = 7;
   string new_content = 8;
 }
 
-message DeletePageNode {
-  int64 org_id = 1;
-  int64 page_id = 2;
-  int64 page_node_id = 3;
-  int64 by_user_id = 4;
+message UpdatePageNodeResponse {
+}
+
+message DeletePageNodeRequest {
+  string org_id = 1;
+  string page_id = 2;
+  string page_node_id = 3;
+  string by_user_id = 4;
+}
+
+message DeletePageNodeResponse {
 }
