@@ -11,6 +11,7 @@ pub struct Config {
     pub postgres_db_port: u32,
     pub postgres_db_password: String,
     pub postgres_db_pool_max_size: u32,
+    pub grpc_port: u32,
 }
 
 pub fn config() -> &'static Config {
@@ -41,6 +42,13 @@ fn parse_command_line_flags() -> Config {
                 .value_name("MAX_SIZE")
                 .default_value("128"),
         )
+        .arg(
+            Arg::with_name("grpc_port")
+                .help("The port for the GRPC server")
+                .takes_value(true)
+                .value_name("PORT")
+                .default_value("10000"),
+        )
         .get_matches();
 
     // TODO(cliff): Choose the password environment variable in a better way.
@@ -64,5 +72,10 @@ fn parse_command_line_flags() -> Config {
                 &pg_password_env_var
             ));
         }),
+        grpc_port: matches
+            .value_of("grpc_port")
+            .unwrap()
+            .parse::<u32>()
+            .unwrap(),
     }
 }
