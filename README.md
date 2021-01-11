@@ -14,7 +14,7 @@ If the product makes it easy to write well, teams who use it will do better
 work.
 
 ## Todos
-- Create a GRPC server that supports writing operations.
+- Create an Actix Web server that communicates via protobuf requests and responses.
 - Create the frontend project. Decide whether to focus on performance with
   Mikado or play it safe with React.
 - Choose a good name.

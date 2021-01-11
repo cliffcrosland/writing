@@ -11,7 +11,9 @@ pub struct Config {
     pub postgres_db_port: u32,
     pub postgres_db_password: String,
     pub postgres_db_pool_max_size: u32,
-    pub grpc_port: u32,
+    pub http_port: u32,
+    pub cookie_secret: String,
+    pub cookie_secure: bool,
 }
 
 pub fn config() -> &'static Config {
@@ -43,11 +45,11 @@ fn parse_command_line_flags() -> Config {
                 .default_value("128"),
         )
         .arg(
-            Arg::with_name("grpc_port")
-                .help("The port for the GRPC server")
+            Arg::with_name("http_port")
+                .help("The port for the HTTP server")
                 .takes_value(true)
                 .value_name("PORT")
-                .default_value("10000"),
+                .default_value("8080"),
         )
         .get_matches();
 
@@ -68,14 +70,21 @@ fn parse_command_line_flags() -> Config {
             .unwrap(),
         postgres_db_password: std::env::var(pg_password_env_var).unwrap_or_else(|_| {
             panic!(format!(
-                "Could not find environment var {}",
+                "Could not find environment variable {}",
                 &pg_password_env_var
             ));
         }),
-        grpc_port: matches
-            .value_of("grpc_port")
+        http_port: matches
+            .value_of("http_port")
             .unwrap()
             .parse::<u32>()
+            .unwrap(),
+        cookie_secret: std::env::var("COOKIE_SECRET").unwrap_or_else(|_| {
+            panic!("Could not find COOKIE_SECRET environment variable");
+        }),
+        cookie_secure: std::env::var("COOKIE_SECURE")
+            .unwrap_or_else(|_| "true".to_string())
+            .parse::<bool>()
             .unwrap(),
     }
 }
