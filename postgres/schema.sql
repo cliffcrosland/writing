@@ -76,7 +76,7 @@ CREATE TABLE pages (
     title text,
     created_by_user_id uuid NOT NULL,
     last_edited_by_user_id uuid NOT NULL,
-    project_owner_user_id uuid NOT NULL,
+    project_owner_user_id uuid,
     created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );

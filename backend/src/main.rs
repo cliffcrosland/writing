@@ -9,16 +9,25 @@ use actix_web::{error, post, web, App, HttpResponse, HttpServer};
 use prost::Message;
 use sqlx::postgres::PgPool;
 use sqlx::prelude::PgQueryAs;
+use sqlx::types::chrono;
 use uuid::Uuid;
 
 use config::config;
-use proto::writing::{CreatePageRequest, LoginRequest};
+use proto::writing::{CreatePageRequest, CreatePageResponse, LoginRequest, Page};
 
 struct BackendService {
     db_pool: PgPool,
 }
 
-async fn get_session_user_id(id: Identity, service: &BackendService) -> actix_web::Result<Uuid> {
+struct SessionUser {
+    id: Uuid,
+    org_id: Uuid,
+}
+
+async fn get_session_user(
+    id: Identity,
+    service: &BackendService,
+) -> actix_web::Result<SessionUser> {
     let raw_user_id = match id.identity() {
         Some(raw_user_id) => raw_user_id,
         None => {
@@ -35,18 +44,22 @@ async fn get_session_user_id(id: Identity, service: &BackendService) -> actix_we
         }
     };
 
-    // TODO(cliff): Expensive to check database during every request? Cache in Redis?
-    let found: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM users where id = ?")
+    // Fetch the user's org_id
+    let found_org_id: Option<(Uuid,)> = sqlx::query_as("SELECT org_id FROM users where id = ?")
         .bind(&user_id)
         .fetch_optional(&service.db_pool)
         .await
         .map_err(|_| error::ErrorInternalServerError(""))?;
-    if found.is_none() {
+    if let Some((org_id,)) = found_org_id {
+        Ok(SessionUser {
+            id: user_id,
+            org_id,
+        })
+    } else {
         // User with given id does not exist. Delete cookie.
         id.forget();
-        return Err(error::ErrorUnauthorized(""));
+        Err(error::ErrorUnauthorized(""))
     }
-    Ok(user_id)
 }
 
 #[post("/log_in")]
@@ -97,18 +110,55 @@ async fn create_page(
     body: web::Bytes,
     service: web::Data<BackendService>,
 ) -> actix_web::Result<HttpResponse> {
-    let user_id = get_session_user_id(id, &service).await?;
+    let user = get_session_user(id, &service).await?;
     let request = CreatePageRequest::decode(body).map_err(error::ErrorBadRequest)?;
-    // TODO(cliff): implement page creation
-    dbg!(&user_id);
-    dbg!(&request);
-    Ok(HttpResponse::Ok().finish())
+    let now = chrono::Utc::now();
+    let page_id: (Uuid,) = sqlx::query_as(
+        "INSERT INTO pages \
+        (org_id, title, created_by_user_id, last_edited_by_user_id, created_at, updated_at) \
+        VALUES (?, ?, ?, ?, ?, ?) \
+        RETURNING id",
+    )
+    .bind(&user.org_id)
+    .bind(&request.title)
+    .bind(&user.id)
+    .bind(&user.id)
+    .bind(&now)
+    .bind(&now)
+    .fetch_one(&service.db_pool)
+    .await
+    .map_err(|_| error::ErrorInternalServerError(""))?;
+
+    let now_micros = now.timestamp_nanos() / 1000;
+    let response = CreatePageResponse {
+        page: Some(Page {
+            id: page_id.0.to_simple().to_string(),
+            org_id: user.org_id.to_simple().to_string(),
+            title: request.title,
+            created_by_user_id: user.id.to_simple().to_string(),
+            last_edited_by_user_id: user.id.to_simple().to_string(),
+            project_owner_user_id: "".to_string(),
+            created_at: now_micros,
+            updated_at: now_micros,
+        }),
+    };
+
+    let mut encoded: Vec<u8> = Vec::new();
+    response
+        .encode(&mut encoded)
+        .map_err(|_| error::ErrorInternalServerError(""))?;
+
+    Ok(HttpResponse::Ok()
+        .content_type("application/protobuf")
+        .body(encoded))
 }
 
 /*
 #[post("/api.pages.load_page")]
-async fn load_page(id: Identity, service: web::Data<BackendService>) -> impl Responder {
-    "unimplemented!"
+async fn load_page(id: Identity, service: web::Data<BackendService>) -> actix_web::Result<HttpResponse> {
+    let user = get_session_user(id, &service).await?;
+    let request = LoadPageRequest::decode(body).map_err(error::ErrorBadRequest)?;
+
 }
 
 #[post("/api.pages.update_page_title")]
@@ -160,6 +210,7 @@ async fn main() -> anyhow::Result<()> {
             .wrap(IdentityService::new(create_cookie_identity_policy()))
             .service(log_in)
             .service(log_out)
+            .service(create_page)
     })
     .bind(format!("127.0.0.1:{}", &config().http_port))?
     .run()

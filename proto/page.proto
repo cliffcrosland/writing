@@ -42,9 +42,7 @@ message LoginRequest {
 
 // Page requests
 message CreatePageRequest {
-  string org_id = 1;
-  string by_user_id = 2;
-  string title = 3;
+  string title = 1;
 }
 
 message CreatePageResponse {
