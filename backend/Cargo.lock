@@ -596,6 +596,7 @@ dependencies = [
  "lazy_static",
  "log",
  "prost",
+ "serde",
  "simple_logger",
  "sqlx",
  "tokio 1.0.1",

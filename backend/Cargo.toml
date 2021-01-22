@@ -16,6 +16,7 @@ cookie = "0.14"
 lazy_static = "1.4"
 log = "0.4"
 prost = "0.6"
+serde = "1.0"
 simple_logger = "1.9"
 sqlx = { version = "0.3", features = ["chrono", "postgres", "uuid"] }
 tokio = { version = "1", features = ["full"] }
