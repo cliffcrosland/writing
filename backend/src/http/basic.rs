@@ -43,7 +43,10 @@ pub async fn log_in(
     // Store identity in cookie
     id.remember(user_id.to_simple().to_string());
 
-    // Respond to user
+    // We use "303 See Other" redirect so that refreshing the destination page does not cause us to
+    // re-submit the log_in form via POST.
+    //
+    // See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Redirections#temporary_redirections
     Ok(HttpResponse::SeeOther()
         .set_header(header::LOCATION, "/app")
         .finish())
