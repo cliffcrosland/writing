@@ -52,7 +52,7 @@ CREATE TABLE page_nodes (
 ALTER TABLE ONLY page_nodes
     ADD CONSTRAINT page_nodes_pkey PRIMARY KEY (org_id, id);
 
-CREATE INDEX page_nodes_oid_pid_ord_knd_content ON page_nodes USING btree (org_id, page_id, ordering, kind, content);
+CREATE INDEX page_nodes_ordered ON page_nodes USING btree (org_id, page_id, ordering, id, kind, content);
 
 
 CREATE TABLE page_updates (

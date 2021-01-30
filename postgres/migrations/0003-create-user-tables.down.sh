@@ -2,7 +2,7 @@
 
 SUFFIX=$1
 
-docker exec -i writing_postgres psql -U app -d app << EOF
+docker exec -i writing_postgres psql -U app$SUFFIX -d app$SUFFIX << EOF
 
 DROP INDEX email_verifications_tkn;
 DROP TABLE email_verifications;

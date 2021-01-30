@@ -593,6 +593,7 @@ dependencies = [
  "bcrypt",
  "clap",
  "cookie",
+ "futures",
  "lazy_static",
  "log",
  "prost",
