@@ -16,6 +16,9 @@ fmt:
 clean:
 	cargo clean
 
+open_docs:
+	cargo doc --no-deps --open
+
 test:
 	# Using 8 test threads, one per test database.
 	cargo test -- --test-threads=8

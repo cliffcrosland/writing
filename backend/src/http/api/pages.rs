@@ -171,14 +171,18 @@ async fn delete_page_node(id: Identity, service: web::Data<BackendService>) -> i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::proto::writing::page_node::Kind;
     use crate::testing::utils::{
         clear_db_tables, create_test_db_pool, create_user, default_backend_service,
         default_identity_service, get_session_cookie, take_response_body,
     };
     use crate::utils;
+
     use actix_web::http::StatusCode;
     use actix_web::test::TestRequest;
     use actix_web::{test, App};
+    use sqlx::PgPool;
 
     #[tokio::test]
     async fn test_create_page_success() {
@@ -228,5 +232,217 @@ mod tests {
         assert_eq!(page.title, proto_request.title);
 
         clear_db_tables(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn test_create_page_not_logged_in() {
+        let pool = create_test_db_pool().await;
+        clear_db_tables(&pool).await;
+
+        let mut app = test::init_service(
+            App::new()
+                .data(default_backend_service().await)
+                .wrap(default_identity_service())
+                .service(create_page),
+        )
+        .await;
+
+        let proto_request = CreatePageRequest {
+            title: "Some Awesome Page Title".to_string(),
+        };
+        let encoded_proto_request = utils::encode_protobuf_message(&proto_request).unwrap();
+        // Note no session cookie in the request.
+        let request = TestRequest::post()
+            .uri("/api/pages.createPage")
+            .header("content-type", "application/protobuf")
+            .set_payload(encoded_proto_request)
+            .to_request();
+
+        let mut response = test::call_service(&mut app, request).await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response_body = take_response_body(&mut response);
+        assert!(response_body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_create_page_invalid_protobuf_request() {
+        let pool = create_test_db_pool().await;
+        clear_db_tables(&pool).await;
+
+        let org_id = Uuid::new_v4();
+        let user_id = create_user(&pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let session_cookie = get_session_cookie(&user_id).await;
+
+        let mut app = test::init_service(
+            App::new()
+                .data(default_backend_service().await)
+                .wrap(default_identity_service())
+                .service(create_page),
+        )
+        .await;
+
+        // Note invalid payload
+        let request = TestRequest::post()
+            .uri("/api/pages.createPage")
+            .header("content-type", "application/protobuf")
+            .cookie(session_cookie)
+            .set_payload("invalid payload")
+            .to_request();
+
+        let mut response = test::call_service(&mut app, request).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response_body = take_response_body(&mut response);
+        assert!(response_body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_load_page_success() {
+        let pool = create_test_db_pool().await;
+        clear_db_tables(&pool).await;
+
+        let org_id = Uuid::new_v4();
+        let user_id = create_user(&pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let session_cookie = get_session_cookie(&user_id).await;
+
+        let page_title = "Foo Bar";
+        let page_id = create_mock_page(&pool, page_title, &org_id, &user_id).await;
+
+        let page_node_contents = vec![
+            (Kind::H1, "My Awesome Product"),
+            (Kind::H2, "Problem"),
+            (Kind::Default, "X is a terrible, painful problem."),
+            (Kind::H2, "Solution"),
+            (
+                Kind::Default,
+                "We are excited to announce Y, a solution to problem X.",
+            ),
+            (Kind::Default, "Here is how to use Y:"),
+            (Kind::Code, "def main():\n\tprint('hello world')"),
+            (
+                Kind::Default,
+                "Shout out to Alice and Bob for building this!",
+            ),
+        ];
+        let page_node_ids: Vec<Uuid> =
+            futures::future::join_all(page_node_contents.iter().enumerate().map(
+                |(i, (kind, content))| {
+                    create_mock_page_node(
+                        &pool, &org_id, &page_id, *kind, content, i as f64, &user_id,
+                    )
+                },
+            ))
+            .await;
+        let expected_page_nodes: Vec<(Uuid, Kind, String)> = page_node_ids
+            .iter()
+            .zip(page_node_contents.iter())
+            .map(|(page_node_id, (kind, content))| (*page_node_id, *kind, content.to_string()))
+            .collect();
+
+        let mut app = test::init_service(
+            App::new()
+                .data(default_backend_service().await)
+                .wrap(default_identity_service())
+                .service(load_page),
+        )
+        .await;
+
+        let proto_request = LoadPageRequest {
+            org_id: org_id.to_simple().to_string(),
+            page_id: page_id.to_simple().to_string(),
+        };
+        let encoded_proto_request = utils::encode_protobuf_message(&proto_request).unwrap();
+
+        // Note invalid payload
+        let request = TestRequest::post()
+            .uri("/api/pages.loadPage")
+            .header("content-type", "application/protobuf")
+            .cookie(session_cookie)
+            .set_payload(encoded_proto_request)
+            .to_request();
+
+        let mut response = test::call_service(&mut app, request).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let response_body = take_response_body(&mut response);
+        let proto_response = LoadPageResponse::decode(response_body).unwrap();
+
+        assert!(proto_response.page.is_some());
+        let page = proto_response.page.unwrap();
+        assert_eq!(page.org_id, org_id.to_simple().to_string());
+        assert_eq!(page.id, page_id.to_simple().to_string());
+        assert_eq!(page.title, page_title);
+        assert_eq!(page.created_by_user_id, user_id.to_simple().to_string());
+        assert_eq!(page.last_edited_by_user_id, user_id.to_simple().to_string());
+        assert!(page.project_owner_user_id.is_empty());
+
+        assert_eq!(
+            proto_response.initial_page_nodes.len(),
+            expected_page_nodes.len()
+        );
+        for (i, (page_node_id, kind, content)) in expected_page_nodes.iter().enumerate() {
+            let page_node = &proto_response.initial_page_nodes[i];
+            assert_eq!(page_node.org_id, org_id.to_simple().to_string());
+            assert_eq!(page_node.page_id, page_id.to_simple().to_string());
+            assert_eq!(page_node.id, page_node_id.to_simple().to_string());
+            assert_eq!(page_node.kind, *kind as i32);
+            assert_eq!(page_node.content, *content);
+            assert!((page_node.ordering - (i as f64)).abs() < f64::EPSILON);
+            // Note: This field is empty. It will be loaded later asynchronously. We elide it from
+            // the response so that we do not need to project it into the Postgres index.
+            assert!(page_node.last_edited_by_user_id.is_empty());
+        }
+
+        clear_db_tables(&pool).await;
+    }
+
+    async fn create_mock_page(
+        pool: &PgPool,
+        page_title: &str,
+        org_id: &Uuid,
+        user_id: &Uuid,
+    ) -> Uuid {
+        let (page_id,): (Uuid,) = sqlx::query_as(
+            "INSERT INTO pages \
+            (org_id, title, created_by_user_id, last_edited_by_user_id, created_at, updated_at) \
+            VALUES ($1, $2, $3, $3, now(), now()) \
+            RETURNING id",
+        )
+        .bind(&org_id)
+        .bind(page_title)
+        .bind(&user_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        page_id
+    }
+
+    async fn create_mock_page_node(
+        pool: &PgPool,
+        org_id: &Uuid,
+        page_id: &Uuid,
+        kind: Kind,
+        content: &str,
+        ordering: f64,
+        last_edited_by_user_id: &Uuid,
+    ) -> Uuid {
+        let kind_i32: i32 = kind.into();
+        let (page_node_id,) : (Uuid,) = sqlx::query_as(
+            "INSERT INTO page_nodes \
+            (org_id, page_id, kind, content, ordering, last_edited_by_user_id, created_at, updated_at) \
+            VALUES ($1, $2, $3, $4, $5, $6, now(), now()) \
+            RETURNING id"
+        )
+        .bind(org_id)
+        .bind(page_id)
+        .bind(kind_i32)
+        .bind(content)
+        .bind(ordering)
+        .bind(last_edited_by_user_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        page_node_id
     }
 }
