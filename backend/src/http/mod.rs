@@ -1,7 +1,7 @@
 pub mod api;
 pub mod basic;
 
-use actix_identity::{CookieIdentityPolicy, Identity, IdentityService};
+use actix_session::{CookieSession, Session};
 use actix_web::{error, HttpResponse};
 use sqlx::prelude::PgQueryAs;
 use uuid::Uuid;
@@ -12,62 +12,58 @@ use crate::BackendService;
 pub struct SessionUser {
     pub id: Uuid,
     pub org_id: Uuid,
+    pub role: i32, // TODO(cliff): protobuf enum
 }
 
-const COOKIE_IDENTITY_MAX_AGE: i64 = 30 * 86400;
+const SESSION_COOKIE_MAX_AGE: i64 = 30 * 86400; // 30 days
 
-pub fn create_identity_service(
-    cookie_secret: &[u8],
-    cookie_secure: bool,
-) -> IdentityService<CookieIdentityPolicy> {
-    let cookie_identity_policy = CookieIdentityPolicy::new(cookie_secret)
+pub fn create_cookie_session(cookie_secret: &[u8], cookie_secure: bool) -> CookieSession {
+    CookieSession::private(cookie_secret)
         .name("session")
         .secure(cookie_secure)
         .http_only(true)
         .same_site(cookie::SameSite::Strict)
-        .max_age(COOKIE_IDENTITY_MAX_AGE);
-    IdentityService::new(cookie_identity_policy)
+        .max_age(SESSION_COOKIE_MAX_AGE)
 }
 
 pub async fn get_session_user(
-    id: Identity,
+    session: &Session,
     service: &BackendService,
 ) -> actix_web::Result<SessionUser> {
-    let raw_user_id = match id.identity() {
-        Some(raw_user_id) => raw_user_id,
-        None => {
-            return Err(error::ErrorUnauthorized(""));
-        }
-    };
-    let user_id = match Uuid::parse_str(&raw_user_id) {
-        Ok(user_id) => user_id,
-        Err(e) => {
-            // Invalid UUID in cookie. Delete it.
-            log::error!("Invalid UUID in cookie: {}", e);
-            id.forget();
-            return Err(error::ErrorUnauthorized(""));
-        }
-    };
-
-    // Fetch the user's org_id
-    let found_org_id: Option<(Uuid,)> = sqlx::query_as("SELECT org_id FROM users where id = $1")
-        .bind(&user_id)
-        .fetch_optional(&service.db_pool)
-        .await
-        .map_err(|e| {
-            log::error!("{}", e);
-            error::ErrorInternalServerError("")
-        })?;
-    if let Some((org_id,)) = found_org_id {
-        Ok(SessionUser {
-            id: user_id,
-            org_id,
-        })
-    } else {
-        // User with given id does not exist. Delete cookie.
-        id.forget();
-        Err(error::ErrorUnauthorized(""))
+    let org_id = extract_session_cookie_uuid(session, "org_id");
+    let user_id = extract_session_cookie_uuid(session, "user_id");
+    if org_id.is_none() || user_id.is_none() {
+        session.purge();
+        return Err(error::ErrorUnauthorized(""));
     }
+    let org_id = org_id.unwrap();
+    let user_id = user_id.unwrap();
+
+    let role: Option<(i32,)> = sqlx::query_as(
+        "SELECT role FROM organization_users \
+         WHERE org_id = $1 AND user_id = $2 \
+         LIMIT 1",
+    )
+    .bind(&org_id)
+    .bind(&user_id)
+    .fetch_optional(&service.db_pool)
+    .await
+    .map_err(|e| {
+        log::error!("{}", e);
+        error::ErrorInternalServerError("")
+    })?;
+    let role = match role {
+        Some((role,)) => role,
+        None => {
+            session.purge();
+            return Err(error::ErrorUnauthorized(""));
+        }
+    };
+    Ok(SessionUser {
+        role,
+        org_id,
+        id: user_id,
+    })
 }
 
 pub fn create_protobuf_http_response<M>(message: &M) -> actix_web::Result<HttpResponse>
@@ -80,4 +76,14 @@ where
     Ok(HttpResponse::Ok()
         .content_type("application/protobuf")
         .body(encoded))
+}
+
+pub fn extract_session_cookie_uuid(session: &Session, key: &str) -> Option<Uuid> {
+    let value = match session.get::<String>(key) {
+        Ok(Some(value)) => value,
+        _ => {
+            return None;
+        }
+    };
+    Uuid::parse_str(&value).ok()
 }

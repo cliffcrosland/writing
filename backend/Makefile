@@ -17,7 +17,7 @@ clean:
 	cargo clean
 
 open_docs:
-	cargo doc --no-deps --open
+	cargo doc --open
 
 test:
 	# Using 8 test threads, one per test database.

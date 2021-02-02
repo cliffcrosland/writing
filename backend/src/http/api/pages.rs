@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actix_identity::Identity;
+use actix_session::Session;
 use actix_web::{error, post, web, HttpResponse};
 use prost::Message;
 use sqlx::prelude::PgQueryAs;
@@ -10,17 +10,18 @@ use uuid::Uuid;
 use crate::http;
 use crate::proto::writing::{
     CreatePageRequest, CreatePageResponse, LoadPageRequest, LoadPageResponse, Page, PageNode,
+    UpdatePageTitleRequest, UpdatePageTitleResponse,
 };
 use crate::utils;
 use crate::BackendService;
 
 #[post("/api/pages.createPage")]
 pub async fn create_page(
-    id: Identity,
+    session: Session,
     body: web::Bytes,
     service: web::Data<Arc<BackendService>>,
 ) -> actix_web::Result<HttpResponse> {
-    let user = http::get_session_user(id, &service).await?;
+    let user = http::get_session_user(&session, &service).await?;
     let request = CreatePageRequest::decode(body).map_err(|_| error::ErrorBadRequest(""))?;
     let (page_id, created_at): (Uuid, NaiveDateTime) = sqlx::query_as(
         "INSERT INTO pages \
@@ -56,11 +57,11 @@ pub async fn create_page(
 
 #[post("/api/pages.loadPage")]
 async fn load_page(
-    id: Identity,
+    session: Session,
     body: web::Bytes,
     service: web::Data<Arc<BackendService>>,
 ) -> actix_web::Result<HttpResponse> {
-    let user = http::get_session_user(id, &service).await?;
+    let user = http::get_session_user(&session, &service).await?;
     let request = LoadPageRequest::decode(body).map_err(|_| error::ErrorBadRequest(""))?;
     let request_org_id =
         Uuid::parse_str(&request.org_id).map_err(|_| error::ErrorBadRequest(""))?;
@@ -146,12 +147,44 @@ async fn load_page(
     http::create_protobuf_http_response(&response)
 }
 
-/*
 #[post("/api/pages.updatePageTitle")]
-async fn update_page_title(id: Identity, service: web::Data<BackendService>) -> impl Responder {
-    "unimplemented!"
+async fn update_page_title(
+    session: Session,
+    body: web::Bytes,
+    service: web::Data<Arc<BackendService>>,
+) -> actix_web::Result<HttpResponse> {
+    let user = http::get_session_user(&session, &service).await?;
+    let request = UpdatePageTitleRequest::decode(body).map_err(|_| error::ErrorBadRequest(""))?;
+    let request_org_id =
+        Uuid::parse_str(&request.org_id).map_err(|_| error::ErrorBadRequest(""))?;
+    if user.org_id != request_org_id {
+        return Err(error::ErrorUnauthorized(""));
+    }
+    let request_page_id =
+        Uuid::parse_str(&request.page_id).map_err(|_| error::ErrorBadRequest(""))?;
+    let num_rows_updated = sqlx::query(
+        "UPDATE pages
+         SET title = $1, last_edited_by_user_id = $2, updated_at = now() \
+         WHERE org_id = $3 AND id = $4",
+    )
+    .bind(&request.new_title)
+    .bind(&user.id)
+    .bind(&request_org_id)
+    .bind(&request_page_id)
+    .execute(&service.db_pool)
+    .await
+    .map_err(|e| {
+        log::error!("{}", e);
+        error::ErrorInternalServerError("")
+    })?;
+    if num_rows_updated != 1 {
+        return Err(error::ErrorNotFound(""));
+    }
+    let response = UpdatePageTitleResponse::default();
+    http::create_protobuf_http_response(&response)
 }
 
+/*
 #[post("/api/pages.insertPageNode")]
 async fn insert_page_node(id: Identity, service: web::Data<BackendService>) -> impl Responder {
     "unimplemented!"
@@ -174,29 +207,29 @@ mod tests {
 
     use crate::proto::writing::page_node::Kind;
     use crate::testing::utils::{
-        clear_db_tables, create_test_db_pool, create_user, default_backend_service,
-        default_identity_service, get_session_cookie, take_response_body,
+        create_user, default_backend_service, default_cookie_session, set_session_cookie,
+        take_response_body, TestDbPool,
     };
     use crate::utils;
 
+    use actix_session::UserSession;
     use actix_web::http::StatusCode;
+    use actix_web::test;
     use actix_web::test::TestRequest;
-    use actix_web::{test, App};
+    use actix_web::App;
     use sqlx::PgPool;
 
     #[tokio::test]
     async fn test_create_page_success() {
-        let pool = create_test_db_pool().await;
-        clear_db_tables(&pool).await;
+        let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
-        let session_cookie = get_session_cookie(&user_id).await;
+        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service().await)
-                .wrap(default_identity_service())
+                .data(default_backend_service(pool.db_id).await)
+                .wrap(default_cookie_session())
                 .service(create_page),
         )
         .await;
@@ -208,9 +241,9 @@ mod tests {
         let request = TestRequest::post()
             .uri("/api/pages.createPage")
             .header("content-type", "application/protobuf")
-            .cookie(session_cookie)
             .set_payload(encoded_proto_request)
             .to_request();
+        set_session_cookie(&request.head().get_session(), &org_id, &user_id);
 
         let mut response = test::call_service(&mut app, request).await;
 
@@ -230,19 +263,16 @@ mod tests {
         assert_eq!(page.project_owner_user_id, "".to_string());
         assert!(Uuid::parse_str(&page.id).is_ok());
         assert_eq!(page.title, proto_request.title);
-
-        clear_db_tables(&pool).await;
     }
 
     #[tokio::test]
     async fn test_create_page_not_logged_in() {
-        let pool = create_test_db_pool().await;
-        clear_db_tables(&pool).await;
+        let pool = TestDbPool::new().await;
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service().await)
-                .wrap(default_identity_service())
+                .data(default_backend_service(pool.db_id).await)
+                .wrap(default_cookie_session())
                 .service(create_page),
         )
         .await;
@@ -267,28 +297,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_page_invalid_protobuf_request() {
-        let pool = create_test_db_pool().await;
-        clear_db_tables(&pool).await;
+        let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
-        let session_cookie = get_session_cookie(&user_id).await;
+        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service().await)
-                .wrap(default_identity_service())
+                .data(default_backend_service(pool.db_id).await)
+                .wrap(default_cookie_session())
                 .service(create_page),
         )
         .await;
 
-        // Note invalid payload
+        // Note: invalid payload
         let request = TestRequest::post()
             .uri("/api/pages.createPage")
             .header("content-type", "application/protobuf")
-            .cookie(session_cookie)
             .set_payload("invalid payload")
             .to_request();
+        set_session_cookie(&request.head().get_session(), &org_id, &user_id);
 
         let mut response = test::call_service(&mut app, request).await;
 
@@ -299,15 +327,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_page_success() {
-        let pool = create_test_db_pool().await;
-        clear_db_tables(&pool).await;
+        let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
-        let session_cookie = get_session_cookie(&user_id).await;
-
+        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
         let page_title = "Foo Bar";
-        let page_id = create_mock_page(&pool, page_title, &org_id, &user_id).await;
+        let page_id = create_mock_page(&pool.db_pool, page_title, &org_id, &user_id).await;
 
         let page_node_contents = vec![
             (Kind::H1, "My Awesome Product"),
@@ -329,7 +354,13 @@ mod tests {
             futures::future::join_all(page_node_contents.iter().enumerate().map(
                 |(i, (kind, content))| {
                     create_mock_page_node(
-                        &pool, &org_id, &page_id, *kind, content, i as f64, &user_id,
+                        &pool.db_pool,
+                        &org_id,
+                        &page_id,
+                        *kind,
+                        content,
+                        i as f64,
+                        &user_id,
                     )
                 },
             ))
@@ -342,8 +373,8 @@ mod tests {
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service().await)
-                .wrap(default_identity_service())
+                .data(default_backend_service(pool.db_id).await)
+                .wrap(default_cookie_session())
                 .service(load_page),
         )
         .await;
@@ -358,9 +389,9 @@ mod tests {
         let request = TestRequest::post()
             .uri("/api/pages.loadPage")
             .header("content-type", "application/protobuf")
-            .cookie(session_cookie)
             .set_payload(encoded_proto_request)
             .to_request();
+        set_session_cookie(&request.head().get_session(), &org_id, &user_id);
 
         let mut response = test::call_service(&mut app, request).await;
 
@@ -393,8 +424,167 @@ mod tests {
             // the response so that we do not need to project it into the Postgres index.
             assert!(page_node.last_edited_by_user_id.is_empty());
         }
+    }
 
-        clear_db_tables(&pool).await;
+    #[tokio::test]
+    async fn test_load_page_mismatch_org_id() {
+        let pool = TestDbPool::new().await;
+
+        let org_id = Uuid::new_v4();
+        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let mut app = test::init_service(
+            App::new()
+                .data(default_backend_service(pool.db_id).await)
+                .wrap(default_cookie_session())
+                .service(load_page),
+        )
+        .await;
+
+        // Note: request will contain different org_id from session.
+        let proto_request = LoadPageRequest {
+            org_id: Uuid::new_v4().to_simple().to_string(),
+            page_id: Uuid::new_v4().to_simple().to_string(),
+        };
+        let encoded_proto_request = utils::encode_protobuf_message(&proto_request).unwrap();
+        let request = TestRequest::post()
+            .uri("/api/pages.loadPage")
+            .header("content-type", "application/protobuf")
+            .set_payload(encoded_proto_request)
+            .to_request();
+        set_session_cookie(&request.head().get_session(), &org_id, &user_id);
+
+        let response = test::call_service(&mut app, request).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_update_page_title_success() {
+        let pool = TestDbPool::new().await;
+
+        let org_id = Uuid::new_v4();
+        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let page_id = create_mock_page(&pool.db_pool, "Original Title", &org_id, &user_id).await;
+
+        let mut app = test::init_service(
+            App::new()
+                .data(default_backend_service(pool.db_id).await)
+                .wrap(default_cookie_session())
+                .service(update_page_title),
+        )
+        .await;
+
+        let proto_request = UpdatePageTitleRequest {
+            org_id: org_id.to_simple().to_string(),
+            page_id: page_id.to_simple().to_string(),
+            new_title: "New Awesome Title".to_string(),
+        };
+        let encoded_proto_request = utils::encode_protobuf_message(&proto_request).unwrap();
+        let request = TestRequest::post()
+            .uri("/api/pages.updatePageTitle")
+            .header("content-type", "application/protobuf")
+            .set_payload(encoded_proto_request)
+            .to_request();
+        set_session_cookie(&request.head().get_session(), &org_id, &user_id);
+
+        let response = test::call_service(&mut app, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let (title,): (String,) =
+            sqlx::query_as("SELECT title FROM pages WHERE org_id = $1 AND id = $2")
+                .bind(&org_id)
+                .bind(&page_id)
+                .fetch_one(&pool.db_pool)
+                .await
+                .unwrap();
+        assert_eq!(title, "New Awesome Title");
+    }
+
+    #[tokio::test]
+    async fn test_update_page_title_mismatch_org_id() {
+        let pool = TestDbPool::new().await;
+
+        let org_id = Uuid::new_v4();
+        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let page_id = create_mock_page(&pool.db_pool, "Original Title", &org_id, &user_id).await;
+
+        let mut app = test::init_service(
+            App::new()
+                .data(default_backend_service(pool.db_id).await)
+                .wrap(default_cookie_session())
+                .service(update_page_title),
+        )
+        .await;
+
+        // Note: request and session have different org_id
+        let proto_request = UpdatePageTitleRequest {
+            org_id: Uuid::new_v4().to_simple().to_string(),
+            page_id: page_id.to_simple().to_string(),
+            new_title: "New Awesome Title".to_string(),
+        };
+        let encoded_proto_request = utils::encode_protobuf_message(&proto_request).unwrap();
+        let request = TestRequest::post()
+            .uri("/api/pages.updatePageTitle")
+            .header("content-type", "application/protobuf")
+            .set_payload(encoded_proto_request)
+            .to_request();
+        set_session_cookie(&request.head().get_session(), &org_id, &user_id);
+
+        let response = test::call_service(&mut app, request).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let (title,): (String,) =
+            sqlx::query_as("SELECT title FROM pages WHERE org_id = $1 AND id = $2")
+                .bind(&org_id)
+                .bind(&page_id)
+                .fetch_one(&pool.db_pool)
+                .await
+                .unwrap();
+        // assert title is unchanged
+        assert_eq!(title, "Original Title");
+    }
+
+    #[tokio::test]
+    async fn test_update_page_title_not_found() {
+        let pool = TestDbPool::new().await;
+
+        let org_id = Uuid::new_v4();
+        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let page_id = create_mock_page(&pool.db_pool, "Original Title", &org_id, &user_id).await;
+
+        let mut app = test::init_service(
+            App::new()
+                .data(default_backend_service(pool.db_id).await)
+                .wrap(default_cookie_session())
+                .service(update_page_title),
+        )
+        .await;
+
+        // Note: page_id is some random page that does not exist.
+        let proto_request = UpdatePageTitleRequest {
+            org_id: org_id.to_simple().to_string(),
+            page_id: Uuid::new_v4().to_simple().to_string(),
+            new_title: "New Awesome Title".to_string(),
+        };
+        let encoded_proto_request = utils::encode_protobuf_message(&proto_request).unwrap();
+        let request = TestRequest::post()
+            .uri("/api/pages.updatePageTitle")
+            .header("content-type", "application/protobuf")
+            .set_payload(encoded_proto_request)
+            .to_request();
+        set_session_cookie(&request.head().get_session(), &org_id, &user_id);
+
+        let response = test::call_service(&mut app, request).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let (title,): (String,) =
+            sqlx::query_as("SELECT title FROM pages WHERE org_id = $1 AND id = $2")
+                .bind(&org_id)
+                .bind(&page_id)
+                .fetch_one(&pool.db_pool)
+                .await
+                .unwrap();
+        // assert title is unchanged
+        assert_eq!(title, "Original Title");
     }
 
     async fn create_mock_page(

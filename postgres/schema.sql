@@ -25,6 +25,18 @@ ALTER TABLE ONLY invitations
     ADD CONSTRAINT invitations_pkey PRIMARY KEY (org_id, id);
 
 
+CREATE TABLE organization_users (
+    org_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    role integer DEFAULT 0 NOT NULL,
+    created_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone NOT NULL
+);
+
+ALTER TABLE ONLY organization_users
+    ADD CONSTRAINT organization_users_pkey PRIMARY KEY (org_id, user_id);
+
+
 CREATE TABLE organizations (
     id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
     name text,
@@ -86,20 +98,18 @@ ALTER TABLE ONLY pages
 
 
 CREATE TABLE users (
-    org_id uuid NOT NULL,
     id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
     email text NOT NULL,
     hashed_password text,
     name text NOT NULL,
     photo_url text,
-    role integer DEFAULT 0 NOT NULL,
     email_verified boolean DEFAULT false NOT NULL,
     created_at timestamp without time zone NOT NULL,
     updated_at timestamp without time zone NOT NULL
 );
 
 ALTER TABLE ONLY users
-    ADD CONSTRAINT users_pkey PRIMARY KEY (org_id, id);
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
 
 CREATE UNIQUE INDEX users_email ON users USING btree (email);
 

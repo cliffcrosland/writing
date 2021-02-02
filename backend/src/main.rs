@@ -32,7 +32,7 @@ async fn main() -> anyhow::Result<()> {
     HttpServer::new(move || {
         App::new()
             .data(backend_service.clone())
-            .wrap(http::create_identity_service(
+            .wrap(http::create_cookie_session(
                 config().cookie_secret.as_bytes(),
                 config().cookie_secure,
             ))

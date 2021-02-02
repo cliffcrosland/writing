@@ -13,8 +13,8 @@ CREATE TABLE pages (
   created_by_user_id uuid NOT NULL,
   last_edited_by_user_id uuid NOT NULL,
   project_owner_user_id uuid NOT NULL,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
+  created_at timestamp NOT NULL,
+  updated_at timestamp NOT NULL,
   PRIMARY KEY (org_id, id)
 );
 
@@ -26,8 +26,8 @@ CREATE TABLE page_nodes (
   content text,
   ordering double precision NOT NULL DEFAULT 0,
   last_edited_by_user_id uuid NOT NULL,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
+  created_at timestamp NOT NULL,
+  updated_at timestamp NOT NULL,
   PRIMARY KEY (org_id, id)
 );
 
@@ -44,7 +44,7 @@ CREATE TABLE page_updates (
   page_id uuid NOT NULL,
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   update_message text NOT NULL,
-  occurred_at TIMESTAMP NOT NULL,
+  occurred_at timestamp NOT NULL,
   by_user_id uuid NOT NULL,
   PRIMARY KEY (org_id, id)
 );

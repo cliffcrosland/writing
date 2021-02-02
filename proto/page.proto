@@ -46,8 +46,7 @@ message CreatePageResponse {
 message UpdatePageTitleRequest {
   string org_id = 1;
   string page_id = 2;
-  string by_user_id = 3;
-  string new_title = 4;
+  string new_title = 3;
 }
 
 message UpdatePageTitleResponse {

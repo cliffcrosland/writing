@@ -8,8 +8,8 @@ CREATE TABLE organizations (
   id uuid NOT NULL DEFAULT uuid_generate_v4() PRIMARY KEY,
   name text,
   photo_url text,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL
+  created_at timestamp NOT NULL,
+  updated_at timestamp NOT NULL
 );
 
 CREATE TABLE users (
@@ -21,8 +21,8 @@ CREATE TABLE users (
   photo_url text,
   role int NOT NULL DEFAULT 0,
   email_verified bool NOT NULL DEFAULT FALSE,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
+  created_at timestamp NOT NULL,
+  updated_at timestamp NOT NULL,
   PRIMARY KEY (org_id, id)
 );
 
@@ -32,9 +32,9 @@ CREATE TABLE email_verifications (
   org_id uuid NOT NULL,
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   token text NOT NULL,
-  email_sent_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
+  email_sent_at timestamp,
+  created_at timestamp NOT NULL,
+  updated_at timestamp NOT NULL,
   PRIMARY KEY (org_id, id)
 );
 
@@ -43,9 +43,9 @@ CREATE TABLE invitations (
   id uuid NOT NULL DEFAULT uuid_generate_v4(),
   source_user_id uuid NOT NULL,
   target_email text NOT NULL,
-  email_sent_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL,
+  email_sent_at timestamp,
+  created_at timestamp NOT NULL,
+  updated_at timestamp NOT NULL,
   PRIMARY KEY (org_id, id)
 );
 
