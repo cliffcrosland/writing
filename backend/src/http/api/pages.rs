@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use actix_session::Session;
 use actix_web::{error, post, web, HttpResponse};
 use prost::Message;
@@ -19,7 +17,7 @@ use crate::BackendService;
 pub async fn create_page(
     session: Session,
     body: web::Bytes,
-    service: web::Data<Arc<BackendService>>,
+    service: web::Data<BackendService>,
 ) -> actix_web::Result<HttpResponse> {
     let user = http::get_session_user(&session, &service).await?;
     let request = CreatePageRequest::decode(body).map_err(|_| error::ErrorBadRequest(""))?;
@@ -32,7 +30,7 @@ pub async fn create_page(
     .bind(&user.org_id)
     .bind(&request.title)
     .bind(&user.id)
-    .fetch_one(&service.db_pool)
+    .fetch_one(service.db_pool())
     .await
     .map_err(|e| {
         log::error!("{}", e);
@@ -59,7 +57,7 @@ pub async fn create_page(
 async fn load_page(
     session: Session,
     body: web::Bytes,
-    service: web::Data<Arc<BackendService>>,
+    service: web::Data<BackendService>,
 ) -> actix_web::Result<HttpResponse> {
     let user = http::get_session_user(&session, &service).await?;
     let request = LoadPageRequest::decode(body).map_err(|_| error::ErrorBadRequest(""))?;
@@ -88,7 +86,7 @@ async fn load_page(
     )
     .bind(&request_org_id)
     .bind(&request_page_id)
-    .fetch_one(&service.db_pool);
+    .fetch_one(service.db_pool());
 
     #[derive(sqlx::FromRow)]
     struct PageNodeFromRow {
@@ -106,7 +104,7 @@ async fn load_page(
     )
     .bind(&request_org_id)
     .bind(&request_page_id)
-    .fetch_all(&service.db_pool);
+    .fetch_all(service.db_pool());
 
     let (page_meta_result, initial_page_nodes_result): (
         Result<PageFromRow, sqlx::Error>,
@@ -151,7 +149,7 @@ async fn load_page(
 async fn update_page_title(
     session: Session,
     body: web::Bytes,
-    service: web::Data<Arc<BackendService>>,
+    service: web::Data<BackendService>,
 ) -> actix_web::Result<HttpResponse> {
     let user = http::get_session_user(&session, &service).await?;
     let request = UpdatePageTitleRequest::decode(body).map_err(|_| error::ErrorBadRequest(""))?;
@@ -171,7 +169,7 @@ async fn update_page_title(
     .bind(&user.id)
     .bind(&request_org_id)
     .bind(&request_page_id)
-    .execute(&service.db_pool)
+    .execute(service.db_pool())
     .await
     .map_err(|e| {
         log::error!("{}", e);
@@ -224,11 +222,11 @@ mod tests {
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let user_id = create_user(pool.db_pool(), &org_id, "janesmith@foo.com", "Jane Smith").await;
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service(pool.db_id).await)
+                .data(default_backend_service(pool.db_pool_clone()).await)
                 .wrap(default_cookie_session())
                 .service(create_page),
         )
@@ -271,7 +269,7 @@ mod tests {
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service(pool.db_id).await)
+                .data(default_backend_service(pool.db_pool_clone()).await)
                 .wrap(default_cookie_session())
                 .service(create_page),
         )
@@ -300,11 +298,11 @@ mod tests {
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let user_id = create_user(pool.db_pool(), &org_id, "janesmith@foo.com", "Jane Smith").await;
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service(pool.db_id).await)
+                .data(default_backend_service(pool.db_pool_clone()).await)
                 .wrap(default_cookie_session())
                 .service(create_page),
         )
@@ -330,9 +328,9 @@ mod tests {
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let user_id = create_user(pool.db_pool(), &org_id, "janesmith@foo.com", "Jane Smith").await;
         let page_title = "Foo Bar";
-        let page_id = create_mock_page(&pool.db_pool, page_title, &org_id, &user_id).await;
+        let page_id = create_mock_page(pool.db_pool(), page_title, &org_id, &user_id).await;
 
         let page_node_contents = vec![
             (Kind::H1, "My Awesome Product"),
@@ -354,7 +352,7 @@ mod tests {
             futures::future::join_all(page_node_contents.iter().enumerate().map(
                 |(i, (kind, content))| {
                     create_mock_page_node(
-                        &pool.db_pool,
+                        pool.db_pool(),
                         &org_id,
                         &page_id,
                         *kind,
@@ -373,7 +371,7 @@ mod tests {
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service(pool.db_id).await)
+                .data(default_backend_service(pool.db_pool_clone()).await)
                 .wrap(default_cookie_session())
                 .service(load_page),
         )
@@ -431,10 +429,10 @@ mod tests {
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let user_id = create_user(pool.db_pool(), &org_id, "janesmith@foo.com", "Jane Smith").await;
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service(pool.db_id).await)
+                .data(default_backend_service(pool.db_pool_clone()).await)
                 .wrap(default_cookie_session())
                 .service(load_page),
         )
@@ -462,12 +460,12 @@ mod tests {
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
-        let page_id = create_mock_page(&pool.db_pool, "Original Title", &org_id, &user_id).await;
+        let user_id = create_user(pool.db_pool(), &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let page_id = create_mock_page(pool.db_pool(), "Original Title", &org_id, &user_id).await;
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service(pool.db_id).await)
+                .data(default_backend_service(pool.db_pool_clone()).await)
                 .wrap(default_cookie_session())
                 .service(update_page_title),
         )
@@ -493,7 +491,7 @@ mod tests {
             sqlx::query_as("SELECT title FROM pages WHERE org_id = $1 AND id = $2")
                 .bind(&org_id)
                 .bind(&page_id)
-                .fetch_one(&pool.db_pool)
+                .fetch_one(pool.db_pool())
                 .await
                 .unwrap();
         assert_eq!(title, "New Awesome Title");
@@ -504,12 +502,12 @@ mod tests {
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
-        let page_id = create_mock_page(&pool.db_pool, "Original Title", &org_id, &user_id).await;
+        let user_id = create_user(pool.db_pool(), &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let page_id = create_mock_page(pool.db_pool(), "Original Title", &org_id, &user_id).await;
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service(pool.db_id).await)
+                .data(default_backend_service(pool.db_pool_clone()).await)
                 .wrap(default_cookie_session())
                 .service(update_page_title),
         )
@@ -536,7 +534,7 @@ mod tests {
             sqlx::query_as("SELECT title FROM pages WHERE org_id = $1 AND id = $2")
                 .bind(&org_id)
                 .bind(&page_id)
-                .fetch_one(&pool.db_pool)
+                .fetch_one(pool.db_pool())
                 .await
                 .unwrap();
         // assert title is unchanged
@@ -548,12 +546,12 @@ mod tests {
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool.db_pool, &org_id, "janesmith@foo.com", "Jane Smith").await;
-        let page_id = create_mock_page(&pool.db_pool, "Original Title", &org_id, &user_id).await;
+        let user_id = create_user(pool.db_pool(), &org_id, "janesmith@foo.com", "Jane Smith").await;
+        let page_id = create_mock_page(pool.db_pool(), "Original Title", &org_id, &user_id).await;
 
         let mut app = test::init_service(
             App::new()
-                .data(default_backend_service(pool.db_id).await)
+                .data(default_backend_service(pool.db_pool_clone()).await)
                 .wrap(default_cookie_session())
                 .service(update_page_title),
         )
@@ -580,7 +578,7 @@ mod tests {
             sqlx::query_as("SELECT title FROM pages WHERE org_id = $1 AND id = $2")
                 .bind(&org_id)
                 .bind(&page_id)
-                .fetch_one(&pool.db_pool)
+                .fetch_one(pool.db_pool())
                 .await
                 .unwrap();
         // assert title is unchanged

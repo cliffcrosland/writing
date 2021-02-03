@@ -3,7 +3,6 @@ use actix_web::http::header;
 use actix_web::{error, get, post, web, HttpResponse};
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::PgQueryAs;
-use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::BackendService;
@@ -18,23 +17,31 @@ pub struct LoginForm {
 pub async fn log_in(
     session: Session,
     form: web::Form<LoginForm>,
-    service: web::Data<Arc<BackendService>>,
+    service: web::Data<BackendService>,
 ) -> actix_web::Result<HttpResponse> {
     // Query Postgres to find matching user.
+    println!("A");
     let result: Option<(Uuid, String)> =
         sqlx::query_as("SELECT id, hashed_password FROM users WHERE email = $1")
             .bind(&form.email)
-            .fetch_optional(&service.db_pool)
+            .fetch_optional(service.db_pool())
             .await
-            .map_err(|_| error::ErrorInternalServerError(""))?;
+            .map_err(|e| {
+                log::error!("{}", e);
+                error::ErrorInternalServerError("")
+            })?;
     if result.is_none() {
         return Ok(HttpResponse::NotFound().finish());
     }
     let (user_id, hashed_password) = result.unwrap();
 
     // Check to see if password matches
-    let password_matched = bcrypt::verify(&form.password, &hashed_password)
-        .map_err(|_| error::ErrorInternalServerError(""))?;
+    println!("B");
+    let password_matched = bcrypt::verify(&form.password, &hashed_password).map_err(|e| {
+        log::error!("{}", e);
+        error::ErrorInternalServerError("")
+    })?;
+    println!("C");
     if !password_matched {
         return Ok(HttpResponse::NotFound().finish());
     }
@@ -55,12 +62,13 @@ pub async fn log_in(
          RETURNING updated.org_id",
     )
     .bind(&user_id)
-    .fetch_optional(&service.db_pool)
+    .fetch_optional(service.db_pool())
     .await
     .map_err(|e| {
         log::error!("{}", e);
         error::ErrorInternalServerError("")
     })?;
+    println!("D");
     let org_id = match org_id {
         Some((org_id,)) => org_id,
         None => {
@@ -70,12 +78,14 @@ pub async fn log_in(
 
     // Store org_id and user_id in session cookie. A user who belong to multiple orgs may switch
     // their org later, which will update org_id in their session.
+    println!("E");
     session
         .set("org_id", org_id.to_simple().to_string())
         .map_err(|_| error::ErrorInternalServerError(""))?;
     session
         .set("user_id", user_id.to_simple().to_string())
         .map_err(|_| error::ErrorInternalServerError(""))?;
+    println!("F");
 
     // We use "303 See Other" redirect so that refreshing the destination page does not re-submit
     // the log_in form via POST.
@@ -94,16 +104,14 @@ pub async fn log_out(session: Session) -> actix_web::Result<HttpResponse> {
 }
 
 #[get("/")]
-pub async fn marketing(
-    _service: web::Data<Arc<BackendService>>,
-) -> actix_web::Result<HttpResponse> {
+pub async fn marketing(_service: web::Data<BackendService>) -> actix_web::Result<HttpResponse> {
     Ok(HttpResponse::Ok().body("<p>HTML web page goes here</p>"))
 }
 
 #[get("/app")]
 pub async fn app(
     session: Session,
-    service: web::Data<Arc<BackendService>>,
+    service: web::Data<BackendService>,
 ) -> actix_web::Result<HttpResponse> {
     let _user = super::get_session_user(&session, &service).await?;
     Ok(HttpResponse::Ok().body("<p>HTML web page goes here</p>"))
@@ -128,24 +136,23 @@ mod tests {
 
     #[tokio::test]
     async fn test_login_success() {
-        // crate::testing::utils::set_log_level(log::LevelFilter::Debug);
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
-        let user_id = create_user(&pool.db_pool, &org_id, "jane@smith.com", "Jane Smith").await;
+        let user_id = create_user(pool.db_pool(), &org_id, "jane@smith.com", "Jane Smith").await;
 
         let password = "KDIo*kJDLJ(1j1;;asdf;1;;1testtesttest";
         let hashed_password = bcrypt::hash(password, 4).unwrap();
         sqlx::query("UPDATE users SET hashed_password = $1 WHERE id = $2")
             .bind(&hashed_password)
             .bind(&user_id)
-            .execute(&pool.db_pool)
+            .execute(pool.db_pool())
             .await
             .unwrap();
 
         let mut test_app = test::init_service(
             App::new()
-                .data(default_backend_service(pool.db_id).await)
+                .data(default_backend_service(pool.db_pool_clone()).await)
                 .wrap(default_cookie_session())
                 .service(log_in),
         )
@@ -184,8 +191,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_login_user_not_found() {}
+    async fn test_login_user_not_found() {
+        let pool = TestDbPool::new().await;
+
+        let org_id = Uuid::new_v4();
+        create_user(pool.db_pool(), &org_id, "jane@smith.com", "Jane Smith").await;
+
+        let mut test_app = test::init_service(
+            App::new()
+                .data(default_backend_service(pool.db_pool_clone()).await)
+                .wrap(default_cookie_session())
+                .service(log_in),
+        )
+        .await;
+
+        let login_form = LoginForm {
+            email: "some@randomemail.com".to_string(),
+            password: "foobar123123!!!Foobar".to_string(),
+        };
+        let request = TestRequest::post()
+            .uri("/log_in")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .set_form(&login_form)
+            .to_request();
+
+        let response = test::call_service(&mut test_app, request).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 
     #[tokio::test]
-    async fn test_login_organization_user_not_found() {}
+    async fn test_login_organization_user_not_found() {
+        let pool = TestDbPool::new().await;
+
+        let org_id = Uuid::new_v4();
+        let user_id = create_user(pool.db_pool(), &org_id, "jane@smith.com", "Jane Smith").await;
+
+        // Set password for user
+        let password = "KDIo*kJDLJ(1j1;;asdf;1;;1testtesttest";
+        let hashed_password = bcrypt::hash(password, 4).unwrap();
+        sqlx::query("UPDATE users SET hashed_password = $1 WHERE id = $2")
+            .bind(&hashed_password)
+            .bind(&user_id)
+            .execute(pool.db_pool())
+            .await
+            .unwrap();
+
+        // Remove the user from the org.
+        sqlx::query("DELETE FROM organization_users")
+            .execute(pool.db_pool())
+            .await
+            .unwrap();
+
+        let mut test_app = test::init_service(
+            App::new()
+                .data(default_backend_service(pool.db_pool_clone()).await)
+                .wrap(default_cookie_session())
+                .service(log_in),
+        )
+        .await;
+
+        let login_form = LoginForm {
+            email: "jane@smith.com".to_string(),
+            password: "foobar123123!!!Foobar".to_string(),
+        };
+        let request = TestRequest::post()
+            .uri("/log_in")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .set_form(&login_form)
+            .to_request();
+
+        let response = test::call_service(&mut test_app, request).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }

@@ -14,8 +14,15 @@ use sqlx::postgres::PgPool;
 
 use config::config;
 
+#[derive(Clone)]
 pub struct BackendService {
-    pub db_pool: PgPool,
+    pub db_pool: Arc<PgPool>,
+}
+
+impl BackendService {
+    fn db_pool(&self) -> &PgPool {
+        &*self.db_pool
+    }
 }
 
 #[actix_web::main]
@@ -25,9 +32,9 @@ async fn main() -> anyhow::Result<()> {
         .init()
         .unwrap();
 
-    let backend_service = Arc::new(BackendService {
-        db_pool: db::create_pool().await?,
-    });
+    let backend_service = BackendService {
+        db_pool: Arc::new(db::create_pool().await?),
+    };
 
     HttpServer::new(move || {
         App::new()

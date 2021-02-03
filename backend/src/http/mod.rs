@@ -46,7 +46,7 @@ pub async fn get_session_user(
     )
     .bind(&org_id)
     .bind(&user_id)
-    .fetch_optional(&service.db_pool)
+    .fetch_optional(service.db_pool())
     .await
     .map_err(|e| {
         log::error!("{}", e);
