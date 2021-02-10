@@ -47,7 +47,6 @@ async fn main() -> anyhow::Result<()> {
             .service(http::basic::app)
             .service(http::basic::log_in)
             .service(http::basic::log_out)
-            .service(http::api::pages::create_page)
     })
     .bind(format!("127.0.0.1:{}", &config().http_port))?
     .run()
