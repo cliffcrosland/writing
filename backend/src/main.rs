@@ -1,5 +1,5 @@
 mod config;
-mod db;
+mod dynamodb;
 mod http;
 mod proto;
 mod utils;
@@ -7,22 +7,13 @@ mod utils;
 #[cfg(test)]
 mod testing;
 
-use std::sync::Arc;
-
 use actix_web::{App, HttpServer};
-use sqlx::postgres::PgPool;
+use rusoto_dynamodb::DynamoDbClient;
 
 use config::config;
 
-#[derive(Clone)]
 pub struct BackendService {
-    pub db_pool: Arc<PgPool>,
-}
-
-impl BackendService {
-    fn db_pool(&self) -> &PgPool {
-        &*self.db_pool
-    }
+    pub dynamodb_client: DynamoDbClient,
 }
 
 #[actix_web::main]
@@ -32,22 +23,21 @@ async fn main() -> anyhow::Result<()> {
         .init()
         .unwrap();
 
-    let backend_service = BackendService {
-        db_pool: Arc::new(db::create_pool().await?),
-    };
+    let dynamodb_region = &config().dynamodb_region;
 
     HttpServer::new(move || {
         App::new()
-            .data(backend_service.clone())
+            .data(BackendService {
+                dynamodb_client: DynamoDbClient::new(dynamodb_region.clone()),
+            })
             .wrap(http::create_cookie_session(
                 config().cookie_secret.as_bytes(),
                 config().cookie_secure,
             ))
             .service(http::basic::marketing)
             .service(http::basic::app)
-            .service(http::basic::log_in)
-            .service(http::basic::log_out)
-            .service(http::api::pages::create_page)
+            .service(http::sessions::log_in)
+            .service(http::sessions::log_out)
     })
     .bind(format!("127.0.0.1:{}", &config().http_port))?
     .run()

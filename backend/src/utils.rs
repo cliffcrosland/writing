@@ -1,5 +1,6 @@
-use sqlx::types::chrono::NaiveDateTime;
+use chrono::{DateTime, Utc};
 
+#[allow(dead_code)]
 pub fn encode_protobuf_message<M>(message: &M) -> Result<Vec<u8>, prost::EncodeError>
 where
     M: prost::Message,
@@ -11,6 +12,6 @@ where
     }
 }
 
-pub fn date_time_to_micros(date_time: NaiveDateTime) -> i64 {
-    date_time.timestamp_nanos() / 1000
+pub fn get_date_time_millis_string(date_time: &DateTime<Utc>) -> String {
+    date_time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }

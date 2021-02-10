@@ -2,55 +2,67 @@ syntax = "proto3";
 
 package writing;
 
-// A page is an ordered list of page nodes. A page node has a kind and content.
-
 message Page {
   string org_id = 1;
   string id = 2;
-  string title = 3;
-  string created_by_user_id = 4;
-  string last_edited_by_user_id = 5;
-  string project_owner_user_id = 6;
-  int64 created_at = 7;
-  int64 updated_at = 8;
+  string created_by_user_id = 3;
+  string current_page_revision_id = 4;
+  string content = 5;
 }
 
-message PageNode {
-  enum Kind {
-    DEFAULT = 0;
-    H1 = 1;
-    H2 = 2;
-    H3 = 3;
-    H4 = 4;
-    CODE = 5;
-  }
+// Models for real-time collaborative page editing
 
+message PageRevision {
   string org_id = 1;
   string page_id = 2;
   string id = 3;
-  PageNode.Kind kind = 4;
-  string content = 5;
-  double ordering = 6;
-  string last_edited_by_user_id = 7;
+  PageEdit page_edit = 4;
 }
 
-// Page requests
-message CreatePageRequest {
+message PageEdit {
+  oneof page_edit {
+    InsertPageContent insert_page_content = 1;
+    DeletePageContent delete_page_content = 2;
+    UpdatePageTitle update_page_title = 3;
+  }
+}
+
+message InsertPageContent {
+  int32 pos = 1;
+  string text = 2;
+}
+
+message DeletePageContent {
+  int32 start_pos = 1;
+  int32 end_pos = 2;
+}
+
+message UpdatePageTitle {
   string title = 1;
+  int64 client_timestamp_ms = 2;
 }
 
-message CreatePageResponse {
-  Page page = 1;
+message PageUpdate {
+  string new_page_revision_id = 1;
+  repeated PageEdit new_page_edits = 2;
+  repeated PageClientCursor new_page_client_cursors = 3;
 }
 
-message UpdatePageTitleRequest {
+message PageClientCursor {
   string org_id = 1;
-  string page_id = 2;
-  string new_title = 3;
+  string user_id = 2;
+  int32 pos = 3;
 }
 
-message UpdatePageTitleResponse {
+message PageUser {
+  string org_id = 1;
+  string user_id = 2;
+  string name = 3;
+  string email = 4;
+  string photo_url = 5;
 }
+
+// RPCs for real-time collaborative page editing
 
 message LoadPageRequest {
   string org_id = 1;
@@ -58,49 +70,43 @@ message LoadPageRequest {
 }
 
 message LoadPageResponse {
+  Page page =  1;
+}
+
+message SubmitPageEditRequest {
+  string org_id = 1;
+  string page_id = 2;
+  string client_page_revision_id = 3;
+  PageEdit page_edit = 4;
+}
+
+message SubmitPageEditResponse {
+  PageUpdate page_update = 1;
+}
+
+message GetLatestPageUpdateRequest {
+  string client_page_revision_id = 1;
+}
+
+message GetLatestPageUpdateResponse {
+  PageUpdate page_update = 1;
+}
+
+// RPCs for creating and deleting pages
+
+message CreatePageRequest {
+  string org_id = 1;
+  string name = 2;
+}
+
+message CreatePageResponse {
   Page page = 1;
-  repeated PageNode initial_page_nodes = 2;
 }
 
-// Page Node edits:
-
-message InsertPageNodeRequest {
+message DeletePageRequest {
   string org_id = 1;
   string page_id = 2;
-  // Semantically, an empty string value here means that we want to append the
-  // node to the end of document.
-  string before_page_node_id = 3;
-  string by_user_id = 4;
-  PageNode.Kind kind = 5;
-  string content = 6;
 }
 
-message InsertPageNodeResponse {
-  string org_id = 1;
-  string page_id = 2;
-  string page_node_id = 3;
-}
-
-message UpdatePageNodeRequest {
-  string org_id = 1;
-  string page_id = 2;
-  string page_node_id = 3;
-  string by_user_id = 4;
-  bool kind_changed = 5;
-  PageNode.Kind new_kind = 6;
-  bool content_changed = 7;
-  string new_content = 8;
-}
-
-message UpdatePageNodeResponse {
-}
-
-message DeletePageNodeRequest {
-  string org_id = 1;
-  string page_id = 2;
-  string page_node_id = 3;
-  string by_user_id = 4;
-}
-
-message DeletePageNodeResponse {
+message DeletePageResponse {
 }

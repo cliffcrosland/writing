@@ -1,11 +1,13 @@
 pub mod api;
 pub mod basic;
+pub mod sessions;
 
 use actix_session::{CookieSession, Session};
 use actix_web::{error, HttpResponse};
-use sqlx::prelude::PgQueryAs;
+use rusoto_dynamodb::{DynamoDb, GetItemInput};
 use uuid::Uuid;
 
+use crate::dynamodb::{av_get_n_i32, av_map, av_s, dynamodb_table_name};
 use crate::utils;
 use crate::BackendService;
 
@@ -39,26 +41,28 @@ pub async fn get_session_user(
     let org_id = org_id.unwrap();
     let user_id = user_id.unwrap();
 
-    let role: Option<(i32,)> = sqlx::query_as(
-        "SELECT role FROM organization_users \
-         WHERE org_id = $1 AND user_id = $2 \
-         LIMIT 1",
-    )
-    .bind(&org_id)
-    .bind(&user_id)
-    .fetch_optional(service.db_pool())
-    .await
-    .map_err(|e| {
-        log::error!("{}", e);
-        error::ErrorInternalServerError("")
-    })?;
-    let role = match role {
-        Some((role,)) => role,
-        None => {
-            session.purge();
-            return Err(error::ErrorUnauthorized(""));
-        }
-    };
+    let output = service
+        .dynamodb_client
+        .get_item(GetItemInput {
+            table_name: dynamodb_table_name("organization_users"),
+            key: av_map(&[
+                av_s("org_id", &org_id.to_simple().to_string()),
+                av_s("user_id", &user_id.to_simple().to_string()),
+            ]),
+            projection_expression: Some("role".to_string()),
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| {
+            log::error!("{}", e);
+            error::ErrorInternalServerError("")
+        })?;
+    if output.item.is_none() {
+        session.purge();
+        return Err(error::ErrorUnauthorized(""));
+    }
+    let item = output.item.unwrap();
+    let role = av_get_n_i32(&item, "role").ok_or_else(|| error::ErrorUnauthorized(""))?;
     Ok(SessionUser {
         role,
         org_id,
@@ -66,6 +70,7 @@ pub async fn get_session_user(
     })
 }
 
+#[allow(dead_code)]
 pub fn create_protobuf_http_response<M>(message: &M) -> actix_web::Result<HttpResponse>
 where
     M: prost::Message,

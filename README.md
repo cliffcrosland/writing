@@ -2,19 +2,39 @@
 
 This is a project management app focused on writing.
 
-Teams do better work when they write well. A five page memo is harder to create
-than a slide deck, but it is more valuable: well-written ideas are much easier
-to understand.
+A six-page memo is often better at conveying information than a slide deck.
+When you write a memo, you are forced to write out your ideas in complete
+sentences and paragraphs. This helps you think through your ideas more
+rigorously and improve your arguments.
 
-It should be easy to write in complete sentences and paragraphs. It should be
-easy to reference other writing. It should be easy to turn writing into a
-project and track its progress.
+With this app, teams collaborate with one another by writing in complete
+sentences and paragraphs.
 
-If the product makes it easy to write well, teams who use it will do better
-work.
+You can easily create many pages containing personal notes. These pages are
+linked to one another using bi-directional links.
+
+You can share a subset of these pages with your team and collaborate on them
+together in real time.
+
+If you would like, these notes can become documentation for the whole company
+to share. Team members can explore related concepts at your company by
+following bi-directional links.
+
+If you want to turn a page into a task, you can add the page to a project
+board. The task makes progress through the board by moving from column to
+column.
+
+When you work on a task, you can open up the task's page, read details written
+there, and follow bi-directional links to get acquainted with relevant
+documentation and related concepts.
+
 
 ## Todos
-- Create an Actix Web server that communicates via protobuf requests and responses.
-- Create the frontend project. Decide whether to focus on performance with
-  Mikado or play it safe with React.
-- Choose a good name.
+- Migrate Postgres code to DynamoDB. I want easy horizontal scalability.
+- Support DynamoDB testing. Table namespace per test thread.
+- Implement backend code for operational transformation protocol and algorithms
+  to support real-time collaborative page editing.
+- Create the frontend project.
+- Implement frontend code for operational transformation protocol. Consider
+  re-using shared Rust library, compiled to WASM.
+- Choose a good name for this project.
