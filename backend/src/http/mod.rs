@@ -1,5 +1,6 @@
 pub mod api;
 pub mod basic;
+pub mod sessions;
 
 use actix_session::{CookieSession, Session};
 use actix_web::{error, HttpResponse};

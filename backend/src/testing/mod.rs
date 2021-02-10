@@ -1,4 +1,7 @@
 #[cfg(test)]
+
+pub mod dynamodb;
+
 pub mod utils {
     use std::collections::VecDeque;
     use std::sync::{Arc, Condvar, Mutex};
@@ -146,7 +149,14 @@ pub mod utils {
     }
 
     pub async fn default_backend_service(db_pool: Arc<PgPool>) -> BackendService {
-        BackendService { db_pool }
+        BackendService {
+            db_pool,
+            dynamodb_client: rusoto_dynamodb::DynamoDbClient::new(
+                rusoto_core::Region::Custom {
+                    name: "testing".to_string(),
+                    endpoint: "http://localhost:8000".to_string(),
+                }),
+        }
     }
 
     pub const TEST_COOKIE_SECRET: [u8; 32] = [0; 32];

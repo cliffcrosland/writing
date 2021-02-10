@@ -5,11 +5,12 @@ package writing;
 message Page {
   string org_id = 1;
   string id = 2;
-  string content = 3;
-  string created_by_user_id = 4;
-  string last_edited_by_user_id = 5;
-  string current_page_revision_id = 6;
+  string created_by_user_id = 3;
+  string current_page_revision_id = 4;
+  string content = 5;
 }
+
+// Models for real-time collaborative page editing
 
 message PageRevision {
   string org_id = 1;
@@ -36,7 +37,7 @@ message DeletePageContent {
   int32 end_pos = 2;
 }
 
-message UpdatePageTitleEdit {
+message UpdatePageTitle {
   string title = 1;
   int64 client_timestamp_ms = 2;
 }
@@ -61,7 +62,7 @@ message PageUser {
   string photo_url = 5;
 }
 
-// RPC requests and responses:
+// RPCs for real-time collaborative page editing
 
 message LoadPageRequest {
   string org_id = 1;
@@ -91,3 +92,21 @@ message GetLatestPageUpdateResponse {
   PageUpdate page_update = 1;
 }
 
+// RPCs for creating and deleting pages
+
+message CreatePageRequest {
+  string org_id = 1;
+  string name = 2;
+}
+
+message CreatePageResponse {
+  Page page = 1;
+}
+
+message DeletePageRequest {
+  string org_id = 1;
+  string page_id = 2;
+}
+
+message DeletePageResponse {
+}
