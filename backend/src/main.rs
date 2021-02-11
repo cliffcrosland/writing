@@ -1,5 +1,5 @@
 mod config;
-mod db;
+mod dynamodb;
 mod http;
 mod proto;
 mod utils;
@@ -11,19 +11,11 @@ use std::sync::Arc;
 
 use actix_web::{App, HttpServer};
 use rusoto_dynamodb::DynamoDbClient;
-use sqlx::postgres::PgPool;
 
 use config::config;
 
 pub struct BackendService {
-    pub db_pool: Arc<PgPool>,
     pub dynamodb_client: DynamoDbClient,
-}
-
-impl BackendService {
-    fn db_pool(&self) -> &PgPool {
-        &*self.db_pool
-    }
 }
 
 #[actix_web::main]
@@ -33,17 +25,13 @@ async fn main() -> anyhow::Result<()> {
         .init()
         .unwrap();
 
-    let postgres_pool = Arc::new(db::create_pool().await?);
+    let dynamodb_region = &config().dynamodb_region;
 
     HttpServer::new(move || {
-        // All server threads share a global Postgres connection pool. However, each server thread
-        // has its own DynamoDB HTTP client.
-        let backend_service = BackendService {
-            db_pool: postgres_pool.clone(),
-            dynamodb_client: DynamoDbClient::new(config().dynamodb_region.clone()),
-        };
         App::new()
-            .data(backend_service)
+            .data(BackendService {
+                dynamodb_client: DynamoDbClient::new(dynamodb_region.clone()),
+            })
             .wrap(http::create_cookie_session(
                 config().cookie_secret.as_bytes(),
                 config().cookie_secure,

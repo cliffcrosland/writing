@@ -21,7 +21,6 @@ rusoto_core = "0.46"
 rusoto_dynamodb = "0.46"
 serde = "1.0"
 simple_logger = "1.9"
-sqlx = { version = "0.3", features = ["chrono", "postgres", "uuid"] }
 tokio = { version = "1", features = ["full"] }
 tonic = "0.3"
 uuid = { version = "0.8", features = ["v4"] }

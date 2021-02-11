@@ -1,14 +1,17 @@
 #[cfg(test)]
-
-use futures::future;
+// Note: The DynamoDB schema in this file exists for the sake of documentation and testing. We do
+// not compile the code in this file into the release binary.
+//
+// Tables in the staging and production environments are created and maintained manually in the AWS
+// UI. We want to make important decisions about the tables using the AWS UI, not automatically
+// (eg. table billing modes).
 use lazy_static::lazy_static;
 use rusoto_dynamodb::{
-    AttributeDefinition, CreateTableInput, DynamoDb, KeySchemaElement, LocalSecondaryIndex,
-    Projection,
+    AttributeDefinition, CreateTableInput, GlobalSecondaryIndex, KeySchemaElement, Projection,
 };
 
 lazy_static! {
-    static ref TABLE_DEFINITIONS: Vec<CreateTableInput> = vec![
+    pub static ref TABLE_DEFINITIONS: Vec<CreateTableInput> = vec![
         CreateTableInput {
             table_name: "users".to_string(),
             attribute_definitions: vec![
@@ -41,27 +44,22 @@ lazy_static! {
                     attribute_type: "N".to_string(),
                 },
             ],
-            key_schema: vec![
-                KeySchemaElement {
+            key_schema: vec![KeySchemaElement {
+                attribute_name: "email".to_string(),
+                key_type: "HASH".to_string(),
+            }],
+            global_secondary_indexes: Some(vec![GlobalSecondaryIndex {
+                index_name: "users_id-index".to_string(),
+                key_schema: vec![KeySchemaElement {
                     attribute_name: "id".to_string(),
                     key_type: "HASH".to_string(),
-                }
-            ],
-            local_secondary_indexes: Some(vec![
-                LocalSecondaryIndex {
-                    index_name: "users_email".to_string(),
-                    key_schema: vec![
-                        KeySchemaElement {
-                            attribute_name: "email".to_string(),
-                            key_type: "HASH".to_string(),
-                        }
-                    ],
-                    projection: Projection {
-                        projection_type: Some("ALL".to_string()),
-                        ..Default::default()
-                    },
+                }],
+                projection: Projection {
+                    projection_type: Some("ALL".to_string()),
+                    ..Default::default()
                 },
-            ]),
+                ..Default::default()
+            },]),
             ..Default::default()
         },
         CreateTableInput {
@@ -88,12 +86,10 @@ lazy_static! {
                     attribute_type: "N".to_string(),
                 },
             ],
-            key_schema: vec![
-                KeySchemaElement {
-                    attribute_name: "id".to_string(),
-                    key_type: "HASH".to_string(),
-                },
-            ],
+            key_schema: vec![KeySchemaElement {
+                attribute_name: "id".to_string(),
+                key_type: "HASH".to_string(),
+            },],
             ..Default::default()
         },
         CreateTableInput {
@@ -104,7 +100,7 @@ lazy_static! {
                     attribute_type: "S".to_string(),
                 },
                 AttributeDefinition {
-                    attribute_name: "id".to_string(),
+                    attribute_name: "user_id".to_string(),
                     attribute_type: "S".to_string(),
                 },
                 AttributeDefinition {
@@ -119,6 +115,10 @@ lazy_static! {
                     attribute_name: "updated_at".to_string(),
                     attribute_type: "N".to_string(),
                 },
+                AttributeDefinition {
+                    attribute_name: "last_login_at".to_string(),
+                    attribute_type: "N".to_string(),
+                },
             ],
             key_schema: vec![
                 KeySchemaElement {
@@ -126,10 +126,28 @@ lazy_static! {
                     key_type: "HASH".to_string(),
                 },
                 KeySchemaElement {
-                    attribute_name: "id".to_string(),
+                    attribute_name: "user_id".to_string(),
                     key_type: "RANGE".to_string(),
                 }
             ],
+            global_secondary_indexes: Some(vec![GlobalSecondaryIndex {
+                index_name: "organization_users_user_id_last_login_at-index".to_string(),
+                key_schema: vec![
+                    KeySchemaElement {
+                        attribute_name: "user_id".to_string(),
+                        key_type: "HASH".to_string(),
+                    },
+                    KeySchemaElement {
+                        attribute_name: "last_login_at".to_string(),
+                        key_type: "RANGE".to_string(),
+                    }
+                ],
+                projection: Projection {
+                    projection_type: Some("ALL".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }]),
             ..Default::default()
         },
         CreateTableInput {
@@ -156,6 +174,62 @@ lazy_static! {
                     attribute_type: "S".to_string(),
                 },
                 AttributeDefinition {
+                    attribute_name: "org_level_sharing_permission".to_string(),
+                    attribute_type: "N".to_string(),
+                },
+                AttributeDefinition {
+                    attribute_name: "created_at".to_string(),
+                    attribute_type: "N".to_string(),
+                },
+                AttributeDefinition {
+                    attribute_name: "updated_at".to_string(),
+                    attribute_type: "N".to_string(),
+                },
+            ],
+            key_schema: vec![KeySchemaElement {
+                attribute_name: "id".to_string(),
+                key_type: "HASH".to_string(),
+            },],
+            global_secondary_indexes: Some(vec![GlobalSecondaryIndex {
+                index_name: "pages_cbui_ca-index".to_string(),
+                key_schema: vec![
+                    KeySchemaElement {
+                        attribute_name: "created_by_user_id".to_string(),
+                        key_type: "HASH".to_string(),
+                    },
+                    KeySchemaElement {
+                        attribute_name: "created_at".to_string(),
+                        key_type: "RANGE".to_string(),
+                    },
+                ],
+                projection: Projection {
+                    projection_type: Some("ALL".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },]),
+            ..Default::default()
+        },
+        CreateTableInput {
+            table_name: "page_user_sharing_permissions".to_string(),
+            attribute_definitions: vec![
+                AttributeDefinition {
+                    attribute_name: "org_id".to_string(),
+                    attribute_type: "S".to_string(),
+                },
+                AttributeDefinition {
+                    attribute_name: "page_id".to_string(),
+                    attribute_type: "S".to_string(),
+                },
+                AttributeDefinition {
+                    attribute_name: "user_id".to_string(),
+                    attribute_type: "S".to_string(),
+                },
+                AttributeDefinition {
+                    attribute_name: "sharing_permission".to_string(),
+                    attribute_type: "N".to_string(),
+                },
+                AttributeDefinition {
                     attribute_name: "created_at".to_string(),
                     attribute_type: "N".to_string(),
                 },
@@ -166,46 +240,14 @@ lazy_static! {
             ],
             key_schema: vec![
                 KeySchemaElement {
-                    attribute_name: "id".to_string(),
+                    attribute_name: "page_id".to_string(),
                     key_type: "HASH".to_string(),
                 },
+                KeySchemaElement {
+                    attribute_name: "user_id".to_string(),
+                    key_type: "RANGE".to_string(),
+                }
             ],
-            local_secondary_indexes: Some(vec![
-                LocalSecondaryIndex {
-                    index_name: "pages_by_title".to_string(),
-                    key_schema: vec![
-                        KeySchemaElement {
-                            attribute_name: "org_id".to_string(),
-                            key_type: "HASH".to_string(),
-                        },
-                        KeySchemaElement {
-                            attribute_name: "title".to_string(),
-                            key_type: "RANGE".to_string(),
-                        },
-                    ],
-                    projection: Projection {
-                        projection_type: Some("ALL".to_string()),
-                        ..Default::default()
-                    },
-                },
-                LocalSecondaryIndex {
-                    index_name: "pages_created_by_user_id".to_string(),
-                    key_schema: vec![
-                        KeySchemaElement {
-                            attribute_name: "created_by_user_id".to_string(),
-                            key_type: "HASH".to_string(),
-                        },
-                        KeySchemaElement {
-                            attribute_name: "created_at".to_string(),
-                            key_type: "RANGE".to_string(),
-                        },
-                    ],
-                    projection: Projection {
-                        projection_type: Some("ALL".to_string()),
-                        ..Default::default()
-                    },
-                },
-            ]),
             ..Default::default()
         },
         CreateTableInput {
@@ -273,30 +315,4 @@ lazy_static! {
             ..Default::default()
         },
     ];
-}
-
-pub async fn create_test_tables(dynamodb_client: &dyn DynamoDb) {
-    let mut futures = Vec::new();
-    for table_def in TABLE_DEFINITIONS.iter().cloned() {
-        let future = dynamodb_client.create_table(table_def);
-        futures.push(future);
-    }
-    let results = future::join_all(futures).await;
-    for result in results {
-        assert!(result.is_ok());
-    }
-}
-
-pub async fn delete_test_tables(dynamodb_client: &dyn DynamoDb) {
-    let mut futures = Vec::new();
-    for table_def in TABLE_DEFINITIONS.iter() {
-        let future = dynamodb_client.delete_table(DeleteTableInput {
-            table_name: table_def.table_name.clone(),
-        });
-        futures.push(future);
-    }
-    let results = future::join_all(futures).await;
-    for result in results {
-        assert!(result.is_ok());
-    }
 }

@@ -4,7 +4,6 @@ pub mod sessions;
 
 use actix_session::{CookieSession, Session};
 use actix_web::{error, HttpResponse};
-use sqlx::prelude::PgQueryAs;
 use uuid::Uuid;
 
 use crate::utils;
@@ -31,6 +30,8 @@ pub async fn get_session_user(
     session: &Session,
     service: &BackendService,
 ) -> actix_web::Result<SessionUser> {
+    Err(error::ErrorInternalServerError(""))
+    /*
     let org_id = extract_session_cookie_uuid(session, "org_id");
     let user_id = extract_session_cookie_uuid(session, "user_id");
     if org_id.is_none() || user_id.is_none() {
@@ -65,6 +66,7 @@ pub async fn get_session_user(
         org_id,
         id: user_id,
     })
+    */
 }
 
 pub fn create_protobuf_http_response<M>(message: &M) -> actix_web::Result<HttpResponse>

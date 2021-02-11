@@ -1,10 +1,12 @@
 use actix_session::Session;
 use actix_web::http::header;
 use actix_web::{error, post, web, HttpResponse};
-use uuid::Uuid;
+use rusoto_dynamodb::{AttributeValue, DynamoDb, QueryInput, UpdateItemInput};
 use serde::{Deserialize, Serialize};
-use sqlx::prelude::PgQueryAs;
 
+use crate::dynamodb::dynamodb_table_name;
+use crate::utils;
+use crate::utils::ToAttributeValueMap;
 use crate::BackendService;
 
 #[derive(Deserialize, Serialize)]
@@ -19,20 +21,50 @@ pub async fn log_in(
     form: web::Form<LoginForm>,
     service: web::Data<BackendService>,
 ) -> actix_web::Result<HttpResponse> {
-    // Query Postgres to find matching user.
-    let result: Option<(Uuid, String)> =
-        sqlx::query_as("SELECT id, hashed_password FROM users WHERE email = $1")
-            .bind(&form.email)
-            .fetch_optional(service.db_pool())
-            .await
-            .map_err(|e| {
-                log::error!("{}", e);
-                error::ErrorInternalServerError("")
-            })?;
-    if result.is_none() {
-        return Ok(HttpResponse::NotFound().finish());
+    let result = service
+        .dynamodb_client
+        .query(QueryInput {
+            table_name: dynamodb_table_name("users"),
+            key_condition_expression: Some("email = :email".to_string()),
+            expression_attribute_values: Some(
+                [(
+                    ":email".to_string(),
+                    AttributeValue {
+                        s: Some(form.email.clone()),
+                        ..Default::default()
+                    },
+                )]
+                .to_attribute_value_map(),
+            ),
+            attributes_to_get: Some(vec!["id".to_string(), "hashed_password".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| {
+            log::error!("{}", e);
+            error::ErrorInternalServerError("")
+        })?;
+
+    if result.items.is_none() {
+        return Err(error::ErrorNotFound(""));
     }
-    let (user_id, hashed_password) = result.unwrap();
+    let items = result.items.unwrap();
+    if items.len() != 1 {
+        return Err(error::ErrorNotFound(""));
+    }
+    let item = &items[0];
+    let user_id = item
+        .get("user_id")
+        .ok_or_else(|| error::ErrorNotFound(""))?
+        .s
+        .as_ref()
+        .ok_or_else(|| error::ErrorNotFound(""))?;
+    let hashed_password = item
+        .get("hashed_password")
+        .ok_or_else(|| error::ErrorNotFound(""))?
+        .s
+        .as_ref()
+        .ok_or_else(|| error::ErrorNotFound(""))?;
 
     // Check to see if password matches
     let password_matched = bcrypt::verify(&form.password, &hashed_password).map_err(|e| {
@@ -43,42 +75,99 @@ pub async fn log_in(
         return Ok(HttpResponse::NotFound().finish());
     }
 
-    // Log in using the most recently selected org. Update the last_login_at timestamp to now.
-    let org_id: Option<(Uuid,)> = sqlx::query_as(
-        "WITH match AS ( \
-             SELECT org_id, user_id FROM organization_users \
-             WHERE user_id = $1 \
-             ORDER BY last_login_at DESC \
-             LIMIT 1 \
-         ) \
-         UPDATE organization_users updated \
-         SET last_login_at = now(), updated_at = now() \
-         FROM match \
-         WHERE updated.org_id = match.org_id AND \
-               updated.user_id = match.user_id \
-         RETURNING updated.org_id",
-    )
-    .bind(&user_id)
-    .fetch_optional(service.db_pool())
-    .await
-    .map_err(|e| {
-        log::error!("{}", e);
-        error::ErrorInternalServerError("")
-    })?;
-    let org_id = match org_id {
-        Some((org_id,)) => org_id,
-        None => {
-            return Err(error::ErrorNotFound(""));
-        }
-    };
+    // Find the most recent org login for this user. Use that org for login.
+    let result = service
+        .dynamodb_client
+        .query(QueryInput {
+            table_name: dynamodb_table_name("organization_users"),
+            // Scan the [user_id, last_login_at] index from most recent login to least. Take the
+            // first result we find.
+            index_name: Some("organization_users_user_id_last_login_at-index".to_string()),
+            scan_index_forward: Some(false),
+            limit: Some(1),
+            key_condition_expression: Some("user_id = :user_id".to_string()),
+            expression_attribute_values: Some(
+                [(
+                    ":user_id".to_string(),
+                    AttributeValue {
+                        s: Some(user_id.clone()),
+                        ..Default::default()
+                    },
+                )]
+                .to_attribute_value_map(),
+            ),
+            attributes_to_get: Some(vec!["org_id".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| {
+            log::error!("{}", e);
+            error::ErrorInternalServerError("")
+        })?;
+    if result.items.is_none() {
+        return Err(error::ErrorNotFound(""));
+    }
+    let items = result.items.unwrap();
+    if items.len() != 1 {
+        return Err(error::ErrorNotFound(""));
+    }
+    let item = &items[0];
+    let org_id = item
+        .get("org_id")
+        .ok_or_else(|| error::ErrorNotFound(""))?
+        .s
+        .as_ref()
+        .ok_or_else(|| error::ErrorNotFound(""))?;
+
+    // Update last_login_at value to be "now", num milliseconds since unix epoch.
+    let now = utils::current_time_millis();
+    service
+        .dynamodb_client
+        .update_item(UpdateItemInput {
+            table_name: dynamodb_table_name("organization_users"),
+            key: [
+                (
+                    "org_id".to_string(),
+                    AttributeValue {
+                        s: Some(org_id.to_string()),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "user_id".to_string(),
+                    AttributeValue {
+                        s: Some(user_id.to_string()),
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .to_attribute_value_map(),
+            update_expression: Some("SET last_login_at = :now, updated_at = :now".to_string()),
+            expression_attribute_values: Some(
+                [(
+                    ":now".to_string(),
+                    AttributeValue {
+                        n: Some(now.to_string()),
+                        ..Default::default()
+                    },
+                )]
+                .to_attribute_value_map(),
+            ),
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| {
+            log::error!("{}", e);
+            error::ErrorInternalServerError("")
+        })?;
 
     // Store org_id and user_id in session cookie. A user who belong to multiple orgs may switch
     // their org later, which will update org_id in their session.
     session
-        .set("org_id", org_id.to_simple().to_string())
+        .set("org_id", org_id)
         .map_err(|_| error::ErrorInternalServerError(""))?;
     session
-        .set("user_id", user_id.to_simple().to_string())
+        .set("user_id", user_id)
         .map_err(|_| error::ErrorInternalServerError(""))?;
 
     // We use "303 See Other" redirect so that refreshing the destination page does not re-submit
@@ -108,14 +197,17 @@ mod tests {
     use actix_web::test::TestRequest;
     use actix_web::App;
     use cookie::Cookie;
+    use uuid::Uuid;
 
     use crate::testing::utils::{
-        create_user, decrypt_session_cookie_value, default_backend_service, default_cookie_session,
-        TestDbPool,
+        decrypt_session_cookie_value, default_backend_service, default_cookie_session, TestDynamoDb,
     };
 
     #[tokio::test]
     async fn test_login_success() {
+        let db = TestDynamoDb::new().await;
+
+        /*
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
@@ -168,10 +260,12 @@ mod tests {
 
         assert_eq!(user_id.to_simple().to_string(), session_user_id);
         assert_eq!(org_id.to_simple().to_string(), session_org_id);
+        */
     }
 
     #[tokio::test]
     async fn test_login_user_not_found() {
+        /*
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
@@ -197,10 +291,12 @@ mod tests {
 
         let response = test::call_service(&mut test_app, request).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        */
     }
 
     #[tokio::test]
     async fn test_login_organization_user_not_found() {
+        /*
         let pool = TestDbPool::new().await;
 
         let org_id = Uuid::new_v4();
@@ -242,5 +338,6 @@ mod tests {
 
         let response = test::call_service(&mut test_app, request).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        */
     }
 }

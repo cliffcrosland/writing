@@ -10,6 +10,7 @@ lazy_static! {
 #[derive(Debug, Default)]
 pub struct Config {
     pub dynamodb_region: rusoto_core::Region,
+    pub dynamodb_env: String,
     pub postgres_db_host: String,
     pub postgres_db_port: u32,
     pub postgres_db_password: String,
@@ -28,11 +29,23 @@ fn parse_command_line_flags() -> Config {
         .version("0.1")
         .arg(
             Arg::with_name("dynamodb_region")
-                .help("The AWS region for DynamoDB. Default value is \"local\", for dev/testing.
-                       Example value for staging/production: \"us-west-2\".")
+                .help(
+                    "The AWS region for DynamoDB. Default value is \"local\", for dev/testing.
+                       Example value for staging/production: \"us-west-2\".",
+                )
                 .takes_value(true)
-                .value_name("AWS_REGION")
-                .default_value("local")
+                .value_name("DYNAMODB_REGION")
+                .default_value("local"),
+        )
+        .arg(
+            Arg::with_name("dynamodb_env")
+                .help(
+                    "The environment prefix to use for DynamoDB tables. Default value is \"local\", for dev/testing.
+                       Example values for staging/production: \"staging\" and \"production\".",
+                )
+                .takes_value(true)
+                .value_name("DYNAMODB_ENV")
+                .default_value("local"),
         )
         .arg(
             Arg::with_name("postgres_db_host")
@@ -75,6 +88,7 @@ fn parse_command_line_flags() -> Config {
             },
             region_str => rusoto_core::Region::from_str(region_str).unwrap(),
         },
+        dynamodb_env: matches.value_of("dynamodb_env").unwrap().to_string(),
         postgres_db_host: matches.value_of("postgres_db_host").unwrap().to_string(),
         postgres_db_port: matches
             .value_of("postgres_db_port")

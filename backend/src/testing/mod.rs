@@ -1,161 +1,138 @@
 #[cfg(test)]
-
-pub mod dynamodb;
-
 pub mod utils {
+    use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::sync::{Arc, Condvar, Mutex};
-
-    use crate::http;
-    use crate::BackendService;
 
     use actix_session::CookieSession;
     use actix_web::dev::{Body, ResponseBody, ServiceResponse};
     use actix_web::web;
     use futures::future;
     use lazy_static::lazy_static;
-    use sqlx::postgres::PgPool;
-    use sqlx::prelude::PgQueryAs;
-    use sqlx::{Cursor, Row};
+    use rusoto_dynamodb::{DeleteTableInput, DynamoDb, DynamoDbClient};
     use uuid::Uuid;
 
-    /// To prevent test threads from interfering with one another, each thread should get its own
-    /// Postgres database to work with.
-    ///
-    /// You can use `TestDbPool` in your tests to achieve this.
-    ///
-    /// Usage:
-    ///
-    /// ```
-    /// #[tokio::test]
-    /// async fn test_my_feature() {
-    ///     // Allocate a new DB pool for this test. The thread waits until a DB is available. When
-    ///     // available, all tables in the DB are cleared, and a connection pool to the DB is
-    ///     // returned.
-    ///     let pool = TestDbPool::new().await;
-    ///
-    ///     // Use `pool.db_pool()` to get a `&PgPool` for sqlx queries.
-    ///     sqlx::query("UPDATE foo SET bar = 'baz' WHERE id = 123")
-    ///         .execute(db.db_pool())
-    ///         .await;
-    ///
-    ///     // Use `pool.db_pool_clone()` to get an `Arc<PgPool>` reference to the pool.
-    ///     //
-    ///     // For example, you can give this to a `BackendService` instance so that your backend
-    ///     // code can use the same DB connection pool as your test code.
-    ///     let app = test::init_service(
-    ///         App::new()
-    ///             .data(default_backend_service(pool.db_pool_clone()))
-    ///             .wrap(default_cookie_session())
-    ///             .service(route_that_handles_my_feature)
-    ///     ).await;
-    ///
-    ///     // When the `TestDbPool` is dropped, all tables in the DB are cleared once more.
-    /// }
-    /// ```
-    const NUM_TEST_DBS: i32 = 8;
+    use crate::dynamodb::dynamodb_table_name;
+    use crate::http;
+    use crate::BackendService;
 
-    // Pair of (lazily initialized Postgres connection pool, DB id).
-    type TestDbPair = (Option<Arc<PgPool>>, i32);
+    const NUM_TEST_DYNAMODB_SHARDS: i32 = 8;
 
     lazy_static! {
-        static ref TEST_DB_POOLS: Arc<(Mutex<VecDeque<TestDbPair>>, Condvar)> = {
-            let mut pools = VecDeque::new();
-            for i in 1..=NUM_TEST_DBS {
-                pools.push_back((None, i));
+        static ref TEST_DYNAMODB_SHARDS: Arc<(Mutex<VecDeque<i32>>, Condvar)> = {
+            let mut shards = VecDeque::new();
+            for shard in 1..=NUM_TEST_DYNAMODB_SHARDS {
+                shards.push_back(shard);
             }
-            let pools_mutex = Mutex::new(pools);
+            let shards_mutex = Mutex::new(shards);
             let cond_var = Condvar::new();
-            Arc::new((pools_mutex, cond_var))
+            Arc::new((shards_mutex, cond_var))
         };
-        static ref TEST_DB_PASSWORD: String = std::env::var("WRITING_PG_DEV_PASSWORD")
-            .unwrap_or_else(|_| {
-                panic!("Could not find env var WRITING_PG_DEV_PASSWORD");
-            });
     }
 
-    pub struct TestDbPool {
-        db_pool: Arc<PgPool>,
-        db_id: i32,
+    thread_local! {
+        static CURRENT_TEST_THREAD_DYNAMODB_SHARD: RefCell<i32> = RefCell::new(-1);
     }
 
-    impl TestDbPool {
+    pub fn current_test_thread_dynamodb_shard() -> i32 {
+        let value = CURRENT_TEST_THREAD_DYNAMODB_SHARD.with(|s| *s.borrow());
+        assert!(value >= 0);
+        value
+    }
+
+    fn set_current_test_thread_dynamodb_shard(shard: i32) {
+        CURRENT_TEST_THREAD_DYNAMODB_SHARD.with(|s| {
+            s.replace(shard);
+        });
+    }
+
+    fn clear_current_test_thread_dynamodb_shard() {
+        CURRENT_TEST_THREAD_DYNAMODB_SHARD.with(|s| {
+            s.replace(-1);
+        });
+    }
+
+    pub struct TestDynamoDb {
+        pub dynamodb_shard: i32,
+        pub dynamodb_client: DynamoDbClient,
+    }
+
+    impl TestDynamoDb {
         pub async fn new() -> Self {
-            let (pool_opt, db_id) = {
-                let pools_mutex = &TEST_DB_POOLS.0;
-                let cond_var = &TEST_DB_POOLS.1;
-
-                let mut pools = pools_mutex.lock().unwrap();
-                while pools.is_empty() {
-                    pools = cond_var.wait(pools).unwrap();
+            let dynamodb_shard = {
+                let shards_mutex = &TEST_DYNAMODB_SHARDS.0;
+                let cond_var = &TEST_DYNAMODB_SHARDS.1;
+                let mut shards = shards_mutex.lock().unwrap();
+                while shards.is_empty() {
+                    shards = cond_var.wait(shards).unwrap();
                 }
-                pools.pop_front().unwrap()
+                shards.pop_front().unwrap()
             };
 
-            let db_pool = match pool_opt {
-                Some(db_pool) => db_pool,
-                None => Arc::new(create_test_db_pool(db_id).await),
-            };
-            let ret = TestDbPool { db_pool, db_id };
-            clear_test_db_tables(ret.db_pool()).await;
-            ret
-        }
+            let dynamodb_client = DynamoDbClient::new(rusoto_core::Region::Custom {
+                name: "testing".to_string(),
+                endpoint: "http://localhost:8000".to_string(),
+            });
 
-        pub fn db_pool(&self) -> &PgPool {
-            &*self.db_pool
-        }
+            set_current_test_thread_dynamodb_shard(dynamodb_shard);
+            delete_test_tables(&dynamodb_client).await;
+            create_test_tables(&dynamodb_client).await;
 
-        pub fn db_pool_clone(&self) -> Arc<PgPool> {
-            self.db_pool.clone()
+            TestDynamoDb {
+                dynamodb_shard,
+                dynamodb_client,
+            }
         }
     }
 
-    impl Drop for TestDbPool {
+    impl Drop for TestDynamoDb {
         fn drop(&mut self) {
-            futures::executor::block_on(clear_test_db_tables(self.db_pool()));
-            let pools_mutex = &TEST_DB_POOLS.0;
-            let cond_var = &TEST_DB_POOLS.1;
+            futures::executor::block_on(delete_test_tables(&self.dynamodb_client));
+
+            let shards_mutex = &TEST_DYNAMODB_SHARDS.0;
+            let cond_var = &TEST_DYNAMODB_SHARDS.1;
             {
-                let mut pools = pools_mutex.lock().unwrap();
-                pools.push_back((Some(self.db_pool.clone()), self.db_id));
+                let mut shards = shards_mutex.lock().unwrap();
+                shards.push_back(self.dynamodb_shard);
             }
             cond_var.notify_one();
+            clear_current_test_thread_dynamodb_shard();
         }
     }
 
-    pub async fn create_test_db_pool(db_id: i32) -> PgPool {
-        let postgres_config_str = format!(
-            "postgres://app_test{}:{}@{}:{}/app_test{}",
-            db_id, &*TEST_DB_PASSWORD, "localhost", 5432, db_id,
-        );
-        PgPool::builder().build(&postgres_config_str).await.unwrap()
-    }
-
-    pub async fn clear_test_db_tables(pool: &PgPool) {
-        let query = "SELECT table_name FROM information_schema.tables \
-                     WHERE table_schema = 'public'";
-        let mut cursor = sqlx::query(query).fetch(pool);
-        let mut table_names = Vec::new();
-        while let Some(row) = cursor.next().await.expect("Expected another row") {
-            let table_name: &str = row.get("table_name");
-            table_names.push(table_name.to_string());
-        }
+    async fn create_test_tables(dynamodb_client: &dyn DynamoDb) {
         let mut futures = Vec::new();
-        for table_name in table_names.iter().cloned() {
-            let query = format!("DELETE FROM {}", table_name);
-            futures.push(async move { sqlx::query(&query).execute(pool).await });
+        for mut table_def in crate::dynamodb::schema::TABLE_DEFINITIONS.iter().cloned() {
+            table_def.table_name = dynamodb_table_name(&table_def.table_name);
+            let future = dynamodb_client.create_table(table_def);
+            futures.push(future);
         }
-        future::join_all(futures).await;
+        let results = future::join_all(futures).await;
+        for result in results {
+            assert!(result.is_ok());
+        }
     }
 
-    pub async fn default_backend_service(db_pool: Arc<PgPool>) -> BackendService {
+    async fn delete_test_tables(dynamodb_client: &dyn DynamoDb) {
+        let mut futures = Vec::new();
+        for table_def in crate::dynamodb::schema::TABLE_DEFINITIONS.iter() {
+            let future = dynamodb_client.delete_table(DeleteTableInput {
+                table_name: dynamodb_table_name(&table_def.table_name),
+            });
+            futures.push(future);
+        }
+        let results = future::join_all(futures).await;
+        for result in results {
+            assert!(result.is_ok());
+        }
+    }
+
+    pub async fn default_backend_service() -> BackendService {
         BackendService {
-            db_pool,
-            dynamodb_client: rusoto_dynamodb::DynamoDbClient::new(
-                rusoto_core::Region::Custom {
-                    name: "testing".to_string(),
-                    endpoint: "http://localhost:8000".to_string(),
-                }),
+            dynamodb_client: rusoto_dynamodb::DynamoDbClient::new(rusoto_core::Region::Custom {
+                name: "testing".to_string(),
+                endpoint: "http://localhost:8000".to_string(),
+            }),
         }
     }
 
@@ -186,33 +163,6 @@ pub mod utils {
             Some(cookie) => Some(cookie.value().to_string()),
             None => None,
         }
-    }
-
-    pub async fn create_user(pool: &PgPool, org_id: &Uuid, email: &str, name: &str) -> Uuid {
-        let (user_id,): (Uuid,) = sqlx::query_as(
-            "INSERT INTO users \
-             (email, name, created_at, updated_at) \
-             VALUES ($1, $2, now(), now()) \
-             RETURNING id",
-        )
-        .bind(email)
-        .bind(name)
-        .fetch_one(pool)
-        .await
-        .unwrap();
-
-        sqlx::query(
-            "INSERT INTO organization_users \
-            (org_id, user_id, created_at, updated_at) \
-            VALUES ($1, $2, now(), now())",
-        )
-        .bind(org_id)
-        .bind(&user_id)
-        .execute(pool)
-        .await
-        .unwrap();
-
-        user_id
     }
 
     #[allow(dead_code)]
