@@ -7,8 +7,8 @@ use actix_web::{error, HttpResponse};
 use rusoto_dynamodb::{DynamoDb, GetItemInput};
 use uuid::Uuid;
 
-use crate::dynamodb::{av_get_n_i32, av_map, av_s, dynamodb_table_name};
-use crate::utils;
+use crate::dynamodb::{av_get_n, av_map, av_s, table_name};
+use crate::proto::encode_protobuf_message;
 use crate::BackendService;
 
 pub struct SessionUser {
@@ -44,10 +44,10 @@ pub async fn get_session_user(
     let output = service
         .dynamodb_client
         .get_item(GetItemInput {
-            table_name: dynamodb_table_name("organization_users"),
+            table_name: table_name("organization_users"),
             key: av_map(&[
-                av_s("org_id", &org_id.to_simple().to_string()),
-                av_s("user_id", &user_id.to_simple().to_string()),
+                av_s("org_id", &org_id.to_hyphenated().to_string()),
+                av_s("user_id", &user_id.to_hyphenated().to_string()),
             ]),
             projection_expression: Some("role".to_string()),
             ..Default::default()
@@ -62,7 +62,7 @@ pub async fn get_session_user(
         return Err(error::ErrorUnauthorized(""));
     }
     let item = output.item.unwrap();
-    let role = av_get_n_i32(&item, "role").ok_or_else(|| error::ErrorUnauthorized(""))?;
+    let role: i32 = av_get_n(&item, "role").ok_or_else(|| error::ErrorUnauthorized(""))?;
     Ok(SessionUser {
         role,
         org_id,
@@ -76,7 +76,7 @@ where
     M: prost::Message,
 {
     let encoded =
-        utils::encode_protobuf_message(message).map_err(|_| error::ErrorInternalServerError(""))?;
+        encode_protobuf_message(message).map_err(|_| error::ErrorInternalServerError(""))?;
 
     Ok(HttpResponse::Ok()
         .content_type("application/protobuf")

@@ -4,7 +4,7 @@ use actix_web::{error, post, web, HttpResponse};
 use rusoto_dynamodb::{DynamoDb, GetItemInput, QueryInput, UpdateItemInput};
 use serde::{Deserialize, Serialize};
 
-use crate::dynamodb::{av_get_s, av_map, av_s, dynamodb_table_name};
+use crate::dynamodb::{av_get_s, av_map, av_s, table_name};
 use crate::utils;
 use crate::BackendService;
 
@@ -23,7 +23,7 @@ pub async fn log_in(
     let output = service
         .dynamodb_client
         .get_item(GetItemInput {
-            table_name: dynamodb_table_name("users"),
+            table_name: table_name("users"),
             key: av_map(&[av_s("email", &form.email)]),
             projection_expression: Some("id, hashed_password".to_string()),
             ..Default::default()
@@ -55,7 +55,7 @@ pub async fn log_in(
     let output = service
         .dynamodb_client
         .query(QueryInput {
-            table_name: dynamodb_table_name("organization_users"),
+            table_name: table_name("organization_users"),
             // Scan the [user_id, last_login_at] index from most recent login to least. Take the
             // first result we find.
             index_name: Some("organization_users_user_id_last_login_at-index".to_string()),
@@ -81,17 +81,17 @@ pub async fn log_in(
     let item = &items[0];
     let org_id = av_get_s(&item, "org_id").ok_or_else(|| error::ErrorNotFound(""))?;
 
-    // Update last_login_at value to be "now", num milliseconds since unix epoch.
+    // Update last_login_at value to be "now"
     let now = chrono::Utc::now();
     service
         .dynamodb_client
         .update_item(UpdateItemInput {
-            table_name: dynamodb_table_name("organization_users"),
+            table_name: table_name("organization_users"),
             key: av_map(&[av_s("org_id", org_id), av_s("user_id", user_id)]),
             update_expression: Some("SET last_login_at = :now, updated_at = :now".to_string()),
             expression_attribute_values: Some(av_map(&[av_s(
                 ":now",
-                &utils::get_date_time_millis_string(&now),
+                &utils::time::date_time_iso_str(&now),
             )])),
             ..Default::default()
         })
@@ -101,8 +101,8 @@ pub async fn log_in(
             error::ErrorInternalServerError("")
         })?;
 
-    // Store org_id and user_id in session cookie. A user who belong to multiple orgs may switch
-    // their org later, which will update org_id in their session.
+    // Store org_id and user_id in session cookie. A user who belongs to multiple orgs may switch
+    // the org, which will update org_id in their session.
     session
         .set("org_id", org_id)
         .map_err(|_| error::ErrorInternalServerError(""))?;
@@ -161,7 +161,7 @@ mod tests {
         let hashed_password = bcrypt::hash(password, 4).unwrap();
         db.dynamodb_client
             .update_item(UpdateItemInput {
-                table_name: dynamodb_table_name("users"),
+                table_name: table_name("users"),
                 key: av_map(&[av_s("email", "jane@smith.com")]),
                 update_expression: Some("SET hashed_password = :hashed_password".to_string()),
                 expression_attribute_values: Some(av_map(&[av_s(
@@ -209,8 +209,8 @@ mod tests {
         let session_org_id: String =
             serde_json::from_str(&session_map.get("org_id").unwrap()).unwrap();
 
-        assert_eq!(user_id.to_simple().to_string(), session_user_id);
-        assert_eq!(org_id.to_simple().to_string(), session_org_id);
+        assert_eq!(user_id.to_hyphenated().to_string(), session_user_id);
+        assert_eq!(org_id.to_hyphenated().to_string(), session_org_id);
     }
 
     #[tokio::test]
@@ -252,12 +252,11 @@ mod tests {
         create_user(&db.dynamodb_client, "jane@smith.com", "Jane Smith").await;
 
         // Set hashed password
-        // Set hashed password
         let password = "KDIo*kJDLJ(1j1;;asdf;1;;1testtesttest";
         let hashed_password = bcrypt::hash(password, 4).unwrap();
         db.dynamodb_client
             .update_item(UpdateItemInput {
-                table_name: dynamodb_table_name("users"),
+                table_name: table_name("users"),
                 key: av_map(&[av_s("email", "jane@smith.com")]),
                 update_expression: Some("SET hashed_password = :hashed_password".to_string()),
                 expression_attribute_values: Some(av_map(&[av_s(

@@ -1,4 +1,3 @@
-#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
@@ -6,12 +5,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use actix_session::CookieSession;
 use actix_web::dev::{Body, ResponseBody, ServiceResponse};
 use actix_web::web;
-use futures::future;
 use lazy_static::lazy_static;
 use rusoto_dynamodb::{DeleteTableInput, DynamoDb, DynamoDbClient};
 use uuid::Uuid;
 
-use crate::dynamodb::test_dynamodb_table_name;
+use crate::dynamodb::test_table_name;
 use crate::http;
 use crate::BackendService;
 
@@ -82,8 +80,8 @@ impl TestDynamoDb {
 }
 
 fn create_test_dynamodb_client() -> DynamoDbClient {
-    // NOTE: Must create a new HTTP client per test to avoid panics in hyper http code.
-    // See: https://github.com/hyperium/hyper/issues/2112
+    // NOTE: Must create a new HTTP client per test tokio executor to avoid panics in hyper http
+    // code. See details: https://github.com/hyperium/hyper/issues/2112
     let request_dispatcher = rusoto_core::request::HttpClient::new().unwrap();
     let credentials_provider = rusoto_credential::DefaultCredentialsProvider::new().unwrap();
     let region = rusoto_core::Region::Custom {
@@ -107,32 +105,38 @@ impl Drop for TestDynamoDb {
 }
 
 async fn create_test_tables(dynamodb_shard: i32, dynamodb_client: &dyn DynamoDb) {
-    let mut futures = Vec::new();
-    for mut table_def in crate::dynamodb::schema::TABLE_DEFINITIONS.iter().cloned() {
-        table_def.table_name = test_dynamodb_table_name(dynamodb_shard, &table_def.table_name);
-        let future = dynamodb_client.create_table(table_def);
-        futures.push(future);
-    }
-    let results = future::join_all(futures).await;
-    for result in results {
-        assert!(result.is_ok());
+    for table_def in crate::dynamodb::schema::TABLE_DEFINITIONS.iter() {
+        // Local DynamoDB sometimes experiences ephemeral errors when creating tables. Retry a few
+        // times until we succeed. Sleep briefly between attempts.
+        let mut success = false;
+        for _ in 1..=5 {
+            let mut table_def = table_def.clone();
+            table_def.table_name = test_table_name(dynamodb_shard, &table_def.table_name);
+            let result = dynamodb_client.create_table(table_def).await;
+            if result.is_ok() {
+                success = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(success);
     }
 }
 
 async fn delete_test_tables(dynamodb_shard: i32, dynamodb_client: &dyn DynamoDb) {
-    let mut futures = Vec::new();
     for table_def in crate::dynamodb::schema::TABLE_DEFINITIONS.iter() {
-        let future = dynamodb_client.delete_table(DeleteTableInput {
-            table_name: test_dynamodb_table_name(dynamodb_shard, &table_def.table_name),
-        });
-        futures.push(future);
+        let table_name = test_table_name(dynamodb_shard, &table_def.table_name);
+        let _result = dynamodb_client
+            .delete_table(DeleteTableInput {
+                table_name: table_name.clone(),
+            })
+            .await;
     }
-    future::join_all(futures).await;
 }
 
 pub async fn default_backend_service() -> BackendService {
     BackendService {
-        dynamodb_client: create_test_dynamodb_client(),
+        dynamodb_client: Arc::new(create_test_dynamodb_client()),
     }
 }
 
@@ -145,10 +149,10 @@ pub fn default_cookie_session() -> CookieSession {
 #[allow(dead_code)]
 pub fn set_session_cookie(session: &actix_session::Session, org_id: &Uuid, user_id: &Uuid) {
     session
-        .set("org_id", org_id.to_simple().to_string())
+        .set("org_id", org_id.to_hyphenated().to_string())
         .unwrap();
     session
-        .set("user_id", user_id.to_simple().to_string())
+        .set("user_id", user_id.to_hyphenated().to_string())
         .unwrap();
 }
 

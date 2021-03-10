@@ -9,11 +9,12 @@ mod testing;
 
 use actix_web::{App, HttpServer};
 use rusoto_dynamodb::DynamoDbClient;
+use std::sync::Arc;
 
 use config::config;
 
 pub struct BackendService {
-    pub dynamodb_client: DynamoDbClient,
+    pub dynamodb_client: Arc<DynamoDbClient>,
 }
 
 #[actix_web::main]
@@ -23,12 +24,12 @@ async fn main() -> anyhow::Result<()> {
         .init()
         .unwrap();
 
-    let dynamodb_region = &config().dynamodb_region;
+    let dynamodb_client = Arc::new(DynamoDbClient::new(config().dynamodb_region.clone()));
 
     HttpServer::new(move || {
         App::new()
             .data(BackendService {
-                dynamodb_client: DynamoDbClient::new(dynamodb_region.clone()),
+                dynamodb_client: dynamodb_client.clone(),
             })
             .wrap(http::create_cookie_session(
                 config().cookie_secret.as_bytes(),

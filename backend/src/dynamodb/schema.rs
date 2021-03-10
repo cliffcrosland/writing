@@ -131,7 +131,7 @@ lazy_static! {
              *   title: string
              *   created_by_user_id: string, uuid
              *   current_page_revision_id: string
-             *   org_level_sharing_permission: int
+             *   org_level_sharing_permission: int, enum
              *   created_at: string, iso 8601 date time
              *   updated_at: string, iso 8601 date time
              *
@@ -172,7 +172,7 @@ lazy_static! {
              *   page_id: string, uuid
              *   user_id: string, uuid
              *   org_id: string, uuid
-             *   sharing_permission: int
+             *   sharing_permission: int, enum
              *   created_at: string, iso 8601 date time
              *   updated_at: string, iso 8601 date time
              *
@@ -245,6 +245,30 @@ lazy_static! {
             provisioned_throughput: default_provisioned_throughput(),
             ..Default::default()
         },
+        CreateTableInput {
+            /*
+             * advisory_locks
+             *
+             *   lock_key: string
+             *   lease_id: string, uuid
+             *   client_name: string,
+             *   lease_duration_ms: integer
+             *
+             * primary key:
+             *
+             *   [lock_key]
+             *
+             */
+            table_name: "advisory_locks".to_string(),
+            attribute_definitions: vec![
+                attr_def("lock_key", "S"),
+            ],
+            key_schema: vec![
+                key_schema_elem("lock_key", "HASH"),
+            ],
+            provisioned_throughput: default_provisioned_throughput(),
+            ..Default::default()
+        },
     ];
 }
 
@@ -264,7 +288,7 @@ fn key_schema_elem(attribute_name: &str, key_type: &str) -> KeySchemaElement {
 
 fn default_provisioned_throughput() -> Option<ProvisionedThroughput> {
     Some(ProvisionedThroughput {
-        read_capacity_units: 10,
-        write_capacity_units: 10,
+        read_capacity_units: 100,
+        write_capacity_units: 100,
     })
 }

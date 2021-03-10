@@ -1,14 +1,14 @@
-use std::collections::HashMap;
-
-use rusoto_dynamodb::AttributeValue;
-
+pub mod lock;
 #[cfg(test)]
 pub mod schema;
+
+use rusoto_dynamodb::AttributeValue;
+use std::collections::HashMap;
 
 /// In production and staging, DynamoDB table names have a prefix, namely "staging-" and
 /// "production-".
 #[cfg(not(test))]
-pub fn dynamodb_table_name(base_table_name: &str) -> String {
+pub fn table_name(base_table_name: &str) -> String {
     format!(
         "{}-{}",
         &crate::config::config().dynamodb_env,
@@ -20,13 +20,13 @@ pub fn dynamodb_table_name(base_table_name: &str) -> String {
 /// like "test4-". This allows database changes in one test thread to be isolated from database
 /// changes in another.
 #[cfg(test)]
-pub fn dynamodb_table_name(base_table_name: &str) -> String {
+pub fn table_name(base_table_name: &str) -> String {
     let shard = crate::testing::utils::current_test_thread_dynamodb_shard();
-    test_dynamodb_table_name(shard, base_table_name)
+    test_table_name(shard, base_table_name)
 }
 
 #[cfg(test)]
-pub fn test_dynamodb_table_name(test_shard: i32, base_table_name: &str) -> String {
+pub fn test_table_name(test_shard: i32, base_table_name: &str) -> String {
     format!("test{}-{}", test_shard, base_table_name)
 }
 
@@ -42,12 +42,14 @@ pub fn av_s(key: &str, value: &str) -> (String, AttributeValue) {
 }
 
 /// Shorthand to create `AttributeValue` entry with string type `N`.
-#[allow(dead_code)]
-pub fn av_n(key: &str, number_str: String) -> (String, AttributeValue) {
+pub fn av_n<T>(key: &str, number: T) -> (String, AttributeValue)
+where
+    T: std::string::ToString,
+{
     (
         key.to_string(),
         AttributeValue {
-            n: Some(number_str),
+            n: Some(number.to_string()),
             ..Default::default()
         },
     )
@@ -70,10 +72,18 @@ pub fn av_map(arr: &[(String, AttributeValue)]) -> HashMap<String, AttributeValu
 
 /// Shorthand. Retrieve the `S` string value for a given key in a Dynamo item.
 pub fn av_get_s<'a>(item: &'a HashMap<String, AttributeValue>, key: &str) -> Option<&'a str> {
-    Some(item.get(key)?.s.as_ref()?.as_str())
+    let attribute_value = item.get(key)?;
+    let s_value = attribute_value.s.as_ref()?;
+    Some(s_value.as_str())
 }
 
-/// Shorthand. Retrieve the `N` value for a given key in a Dynamo item, and parse as an i32.
-pub fn av_get_n_i32(item: &HashMap<String, AttributeValue>, key: &str) -> Option<i32> {
-    item.get(key)?.n.as_ref()?.parse::<i32>().ok()
+/// Shorthand. Retrieve the `N` value for a given key in a Dynamo item, and parse to a number.
+pub fn av_get_n<T>(item: &HashMap<String, AttributeValue>, key: &str) -> Option<T>
+where
+    T: std::str::FromStr,
+{
+    let attribute_value = item.get(key)?;
+    let n_value = attribute_value.n.as_ref()?;
+    let number = n_value.parse::<T>().ok()?;
+    Some(number)
 }
