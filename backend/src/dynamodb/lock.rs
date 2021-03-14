@@ -79,7 +79,6 @@ pub enum Conflict {
     UnknownHolder,
 }
 
-
 /// Options to pass in when trying to acquire a lock.
 #[derive(Default)]
 pub struct LockOpts {

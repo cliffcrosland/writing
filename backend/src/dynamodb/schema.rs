@@ -18,7 +18,7 @@ lazy_static! {
             /*
              * users
              *
-             *   id: string, uuid
+             *   id: string, u_<id>
              *   email: string
              *   name: string
              *   hashed_password: string
@@ -59,7 +59,7 @@ lazy_static! {
             /*
              * organizations
              *
-             *   id: string, uuid
+             *   id: string, o_<id>
              *   name: string
              *   logo_url: string
              *   created_at: string, iso 8601 date time
@@ -82,8 +82,8 @@ lazy_static! {
             /*
              * organization_users
              *
-             *   org_id: string, uuid
-             *   user_id: string, uuid
+             *   org_id: string, o_<id>
+             *   user_id: string, u_<id>
              *   last_login_at: string, iso 8601 date time
              *   role: int
              *   created_at: string, iso 8601 date time
@@ -126,10 +126,10 @@ lazy_static! {
             /*
              * pages
              *
-             *   id: string, uuid
-             *   org_id: string, uuid
+             *   id: string, p_<id>
+             *   org_id: string, o_<id>
              *   title: string
-             *   created_by_user_id: string, uuid
+             *   created_by_user_id: string, u_<id>
              *   current_page_revision_id: string
              *   org_level_sharing_permission: int, enum
              *   created_at: string, iso 8601 date time
@@ -169,9 +169,9 @@ lazy_static! {
             /*
              * page_user_sharing_permissions
              *
-             *   page_id: string, uuid
-             *   user_id: string, uuid
-             *   org_id: string, uuid
+             *   page_id: string, p_<id>
+             *   user_id: string, u_<id>
+             *   org_id: string, o_<id>
              *   sharing_permission: int, enum
              *   created_at: string, iso 8601 date time
              *   updated_at: string, iso 8601 date time
@@ -196,8 +196,8 @@ lazy_static! {
             /*
              * page_content_chunks
              *
-             *   page_id: string, uuid
-             *   org_id: string, uuid
+             *   page_id: string, p_<id>
+             *   org_id: string, o_<id>
              *   content: string
              *   chunk_index: int
              *
@@ -223,8 +223,8 @@ lazy_static! {
             /*
              * page_revisions
              *
-             *   page_id: string, uuid
-             *   org_id: string, uuid
+             *   page_id: string, p_<id>
+             *   org_id: string, o_<id>
              *   id: string, iso 8601 + uuid
              *   page_edit: binary, protobuf message
              *
@@ -250,7 +250,7 @@ lazy_static! {
              * advisory_locks
              *
              *   lock_key: string
-             *   lease_id: string, uuid
+             *   lease_id: string, ll_<id>
              *   client_name: string,
              *   lease_duration_ms: integer
              *
