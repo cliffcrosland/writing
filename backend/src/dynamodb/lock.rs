@@ -1,12 +1,31 @@
 //! Distributed locking, powered by DynamoDB.
 //!
-//! Allows clients to coordinate mutually exclusive access to a shared resource.
+//! # Problem
 //!
-//! When a client acquires a lock, it is granted a lease with finite duration. That way, if the
-//! client crashes before releasing the lock, the lease will expire, allowing other clients to
-//! acquire the lock.
+//! Let's say that multiple clients want to access a resource, but only one client should access it
+//! at a time.
 //!
-//! We use DynamoDB update conditional expressions to make lock acquisition atomic.
+//! # Solution
+//!
+//! The clients can coordinate using a lock.
+//!
+//! A client can acquire a lock. No other client is allowed to acquire the lock until it has been
+//! released.
+//!
+//! A lock can be released by the client that holds it.
+//!
+//! Also, the lock can automatically release itself. When a client acquires a lock, it receives a
+//! temporary lease on the lock. When the lease expires, the lock is released. This helps us handle
+//! cases where clients crash before releasing their locks.
+//!
+//! When a client acquires a lock, it can ask for the lease to be renewed periodically in the
+//! background. That way, the client will hold the lock until either the client releases it or the
+//! client crashes.
+//!
+//! # Implementation
+//!
+//! We use DynamoDB update conditional expressions to make lock acquisition atomic. If the
+//! conditional expression check fails, we know that someone beat us to the lock.
 //!
 //! To prevent clock skew errors, we use lease durations instead of lease start/end timestamps.
 //! When a client tries to acquire a lock and discovers that someone else holds it, the client
@@ -21,6 +40,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::dynamodb::{av_get_n, av_get_s, av_map, av_n, av_s, table_name};
+use crate::ids::{Id, IdType};
 
 use rusoto_core::RusotoError;
 use rusoto_dynamodb::{
@@ -28,7 +48,6 @@ use rusoto_dynamodb::{
     UpdateItemError, UpdateItemInput,
 };
 use tokio::sync::Notify;
-use uuid::Uuid;
 
 /// Client to acquire and release locks.
 pub struct LockClient {
@@ -140,24 +159,27 @@ impl LockClient {
     ///
     /// ### Lock Success
     ///
-    /// If we succeed in acquiring the lock, returns `Ok(AcquireLockResult::Acquired(lock))`. Pass
-    /// this `lock` value to `release_lock` later.
+    /// If the lock was acquired, returns `Ok(AcquireLockResult::Acquired(lock))`. Pass this `lock`
+    /// value to `release_lock` later.
     ///
-    /// When `opts.renew_lease_interval` is given, the client will automatically renew the lease in
-    /// the background on that interval.
+    /// When `opts.renew_lease_interval` is present, the client will automatically renew the lease
+    /// in the background on that interval.
     ///
     /// ### Lock Conflict
     ///
-    /// If someone else currently holds the lock, returns
-    /// `Ok(AcquireLockResult::Conflict(conflict))`.
+    /// If someone else holds the lock, returns `Ok(AcquireLockResult::Conflict(conflict))`.
     ///
-    /// If we discover who holds the lock, then the `conflict` value is
-    /// `Conflict::KnownHolder(lease_details)`. If you want to try to acquire the lock again, wait
-    /// for `lease_details.lease_duration`, and then pass `Some(lease_details)` into the function
-    /// via the `opts.prev_lease_details` field.
+    /// The `conflict` value can be `Conflict::KnownHolder(lease_details)` or
+    /// `Conflict::UnknownHolder`.
     ///
-    /// If our atomic update fails because someone beat us to the lock, we then the `conflict`
-    /// value is `Conflict::UnknownHolder`.
+    /// `Conflict::KnownHolder(lease_details)` happens when we peek at the lock and notice that
+    /// someone holds it. Pass in `lease_details` in a future call to `try_acquire_lock` via the
+    /// `opts.prev_lease_details` field. This will help you acquire the lock if the lease has
+    /// expired.
+    ///
+    /// `Conflict::UnknownHolder` happens when our atomic lock acquisition fails because someone
+    /// beat us to the lock.
+    ///
     ///
     /// ### Error
     ///
@@ -206,14 +228,10 @@ impl LockClient {
         // If the lock is held by another client, we must wait until after that client's lease has
         // expired to try to acquire it.
         if let Some(prev_lease_details) = opts.prev_lease_details.as_ref() {
-            if prev_lease_details.client_id != opts.client_id {
-                let elapsed =
-                    Instant::now().duration_since(prev_lease_details.lease_started_before);
-                if elapsed < prev_lease_details.lease_duration {
-                    return Ok(AcquireLockResult::Conflict(Conflict::KnownHolder(
-                        prev_lease_details.clone(),
-                    )));
-                }
+            if prev_lease_details.client_id != opts.client_id && !prev_lease_details.is_expired() {
+                return Ok(AcquireLockResult::Conflict(Conflict::KnownHolder(
+                    prev_lease_details.clone(),
+                )));
             }
         }
 
@@ -224,7 +242,7 @@ impl LockClient {
         //
         // Attempt to acquire the lock atomically. Use condition expression to fail if someone
         // else acquired the lock before us.
-        let new_lease_id = Uuid::new_v4().to_hyphenated().to_string();
+        let new_lease_id = Id::new(IdType::LockLease).as_str().to_string();
         let input = UpdateItemInput {
             table_name: db_table_name,
             key: db_key,
@@ -236,7 +254,7 @@ impl LockClient {
                 "attribute_not_exists(lease_id) OR lease_id = :prev_lease_id",
             )),
             expression_attribute_values: Some(av_map(&[
-                av_s(":lease_id", &new_lease_id),
+                av_s(":lease_id", new_lease_id.as_str()),
                 av_s(
                     ":prev_lease_id",
                     opts.prev_lease_details

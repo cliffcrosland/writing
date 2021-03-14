@@ -1,6 +1,7 @@
 mod config;
 mod dynamodb;
 mod http;
+mod ids;
 mod proto;
 mod utils;
 

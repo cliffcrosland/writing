@@ -450,13 +450,13 @@ dependencies = [
  "actix-session",
  "actix-web",
  "anyhow",
+ "base-62",
  "bcrypt",
  "chrono",
  "clap",
  "cookie",
  "enum-iterator",
  "futures",
- "hash-ids",
  "lazy_static",
  "log",
  "prost",
@@ -484,6 +484,18 @@ dependencies = [
  "miniz_oxide",
  "object",
  "rustc-demangle",
+]
+
+[[package]]
+name = "base-62"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f28ebd71b3e708e895b83ec2d35c6e2ef96e34945706bf4d73826354e84f89b2"
+dependencies = [
+ "failure",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
 ]
 
 [[package]]
@@ -851,6 +863,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "failure"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d32e9bd16cc02eae7db7ef620b392808b89f6a5e16bb3497d159c6b92a0f4f86"
+dependencies = [
+ "backtrace",
+ "failure_derive",
+]
+
+[[package]]
+name = "failure_derive"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa4da3c766cd7a0db8242e326e9e4e081edd567072893ed320008189715366a4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+ "synstructure",
+]
+
+[[package]]
 name = "fixedbitset"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1086,12 +1120,6 @@ dependencies = [
  "tracing",
  "tracing-futures",
 ]
-
-[[package]]
-name = "hash-ids"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9289cbc8064a1c2f505c92d4d17f7fe5050d487728c19cee7936bd204069bc9d"
 
 [[package]]
 name = "hashbrown"
@@ -1531,6 +1559,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f6bb902e437b6d86e03cce10a7e2af662292c5dfef23b65899ea3ac9354ad44"
 dependencies = [
  "winapi 0.3.9",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "090c7f9998ee0ff65aa5b723e4009f7b217707f1fb5ea551329cc4d6231fb304"
+dependencies = [
+ "autocfg",
+ "num-integer",
+ "num-traits",
 ]
 
 [[package]]
@@ -2296,6 +2335,18 @@ checksum = "4211ce9909eb971f111059df92c45640aad50a619cf55cd76476be803c4c68e6"
 dependencies = [
  "proc-macro2",
  "quote",
+ "unicode-xid",
+]
+
+[[package]]
+name = "synstructure"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b834f2d66f734cb897113e34aaff2f1ab4719ca946f9a7358dba8f8064148701"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
  "unicode-xid",
 ]
 
