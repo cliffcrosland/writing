@@ -28,6 +28,8 @@ use enum_iterator::IntoEnumIterator;
 use lazy_static::lazy_static;
 use uuid::Uuid;
 
+use crate::utils::profanity;
+
 /// An identifier with a type. Example:
 /// ```
 /// let id = Id::new(IdType::User);
@@ -47,8 +49,22 @@ pub struct Id {
 impl Id {
     /// Generate a new identifier with a type. Example:
     pub fn new(id_type: IdType) -> Self {
-        let uuid = Uuid::new_v4();
-        let encoded = encode_uuid(&uuid);
+        // Average performance breakdown (in release build):
+        //
+        // Generate UUID:       20 nanoseconds
+        // Encode in Base-62:   2800 nanoseconds
+        // Check for profanity: 1200 nanoseconds
+        // Format return value: 400 nanoseconds
+        let mut encoded;
+        loop {
+            let uuid = Uuid::new_v4();
+            encoded = encode_uuid(&uuid);
+            // Checking for profanity is extremely fast because we use the Aho-Corasick algorithm.
+            // This check is important to do. About 1% of Base-62 encoded uuids contain profanity.
+            if !profanity::contains_profanity(&encoded) {
+                break;
+            }
+        }
         let id_str = format!("{}_{}", id_type.as_str(), encoded);
         Self {
             id_type,
@@ -146,6 +162,7 @@ pub fn decode_uuid(encoded: &str) -> Option<Uuid> {
     };
     Some(Uuid::from_bytes(bytes))
 }
+
 
 #[cfg(test)]
 mod tests {
