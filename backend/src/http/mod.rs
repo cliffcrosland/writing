@@ -5,15 +5,15 @@ pub mod sessions;
 use actix_session::{CookieSession, Session};
 use actix_web::{error, HttpResponse};
 use rusoto_dynamodb::{DynamoDb, GetItemInput};
-use uuid::Uuid;
 
 use crate::dynamodb::{av_get_n, av_map, av_s, table_name};
+use crate::ids::Id;
 use crate::proto::encode_protobuf_message;
 use crate::BackendService;
 
 pub struct SessionUser {
-    pub id: Uuid,
-    pub org_id: Uuid,
+    pub user_id: Id,
+    pub org_id: Id,
     pub role: i32, // TODO(cliff): protobuf enum
 }
 
@@ -32,8 +32,8 @@ pub async fn get_session_user(
     session: &Session,
     service: &BackendService,
 ) -> actix_web::Result<SessionUser> {
-    let org_id = extract_session_cookie_uuid(session, "org_id");
-    let user_id = extract_session_cookie_uuid(session, "user_id");
+    let org_id = extract_session_cookie_id(session, "org_id");
+    let user_id = extract_session_cookie_id(session, "user_id");
     if org_id.is_none() || user_id.is_none() {
         session.purge();
         return Err(error::ErrorUnauthorized(""));
@@ -46,8 +46,8 @@ pub async fn get_session_user(
         .get_item(GetItemInput {
             table_name: table_name("organization_users"),
             key: av_map(&[
-                av_s("org_id", &org_id.to_hyphenated().to_string()),
-                av_s("user_id", &user_id.to_hyphenated().to_string()),
+                av_s("org_id", org_id.as_str()),
+                av_s("user_id", user_id.as_str()),
             ]),
             projection_expression: Some("role".to_string()),
             ..Default::default()
@@ -64,9 +64,9 @@ pub async fn get_session_user(
     let item = output.item.unwrap();
     let role: i32 = av_get_n(&item, "role").ok_or_else(|| error::ErrorUnauthorized(""))?;
     Ok(SessionUser {
-        role,
+        user_id,
         org_id,
-        id: user_id,
+        role,
     })
 }
 
@@ -83,12 +83,9 @@ where
         .body(encoded))
 }
 
-pub fn extract_session_cookie_uuid(session: &Session, key: &str) -> Option<Uuid> {
-    let value = match session.get::<String>(key) {
-        Ok(Some(value)) => value,
-        _ => {
-            return None;
-        }
-    };
-    Uuid::parse_str(&value).ok()
+pub fn extract_session_cookie_id(session: &Session, key: &str) -> Option<Id> {
+    match session.get::<String>(key) {
+        Ok(Some(value)) => Id::parse(&value),
+        _ => None,
+    }
 }

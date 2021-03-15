@@ -58,23 +58,14 @@ impl Id {
 
     /// Parse the id, if we can.
     pub fn parse(id_str: &str) -> Option<Self> {
-        let idx = match id_str.find('_') {
-            Some(idx) => idx,
-            None => {
-                return None;
-            }
-        };
+        let idx = id_str.find('_')?;
         let (prefix, suffix) = id_str.split_at(idx);
         let suffix = &suffix[1..]; // start after '_'
-        let id_type = match IdType::from_str(prefix) {
-            Some(it) => it,
-            None => {
-                return None;
-            }
-        };
-        if !decode_uuid(suffix).is_some() {
-            return None;
-        }
+
+        // valid type prefix, valid Base-62 encoded uuid suffix
+        let id_type = IdType::from_str(prefix)?;
+        decode_uuid(suffix)?;
+
         Some(Self {
             id_type,
             id_str: String::from(id_str),

@@ -138,8 +138,8 @@ mod tests {
     use actix_web::App;
     use chrono::Utc;
     use cookie::Cookie;
-    use uuid::Uuid;
 
+    use crate::ids::{Id, IdType};
     use crate::testing::utils::{
         decrypt_session_cookie_value, default_backend_service, default_cookie_session, TestDynamoDb,
     };
@@ -151,7 +151,7 @@ mod tests {
         let db = TestDynamoDb::new().await;
 
         // Create user, add to org
-        let org_id = Uuid::new_v4();
+        let org_id = Id::new(IdType::Organization);
         let user_id = create_user(&db.dynamodb_client, "jane@smith.com", "Jane Smith").await;
         let last_login_at = Utc::now() - chrono::Duration::days(1);
         create_organization_user(&db.dynamodb_client, &org_id, &user_id, &last_login_at).await;
@@ -209,15 +209,15 @@ mod tests {
         let session_org_id: String =
             serde_json::from_str(&session_map.get("org_id").unwrap()).unwrap();
 
-        assert_eq!(user_id.to_hyphenated().to_string(), session_user_id);
-        assert_eq!(org_id.to_hyphenated().to_string(), session_org_id);
+        assert_eq!(user_id.as_str(), &session_user_id);
+        assert_eq!(org_id.as_str(), &session_org_id);
     }
 
     #[tokio::test]
     async fn test_login_user_not_found() {
         let db = TestDynamoDb::new().await;
 
-        let org_id = Uuid::new_v4();
+        let org_id = Id::new(IdType::Organization);
         let user_id = create_user(&db.dynamodb_client, "jane@smith.com", "Jane Smith").await;
         let last_login_at = Utc::now() - chrono::Duration::days(1);
         create_organization_user(&db.dynamodb_client, &org_id, &user_id, &last_login_at).await;
