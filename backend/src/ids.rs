@@ -49,12 +49,12 @@ pub struct Id {
 impl Id {
     /// Generate a new identifier with a type. Example:
     pub fn new(id_type: IdType) -> Self {
-        // Average performance breakdown (in release build):
+        // Rough performance breakdown (in release build):
         //
-        // Generate UUID:       20 nanoseconds
-        // Encode in Base-62:   2800 nanoseconds
-        // Check for profanity: 1200 nanoseconds
-        // Format return value: 400 nanoseconds
+        // Generate UUID:         20 ns
+        // Encode in Base-62:   2800 ns
+        // Check for profanity: 1200 ns
+        // Format return value:  400 ns
         let mut encoded;
         loop {
             let uuid = Uuid::new_v4();
