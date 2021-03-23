@@ -66,10 +66,7 @@ impl Id {
             }
         }
         let id_str = format!("{}_{}", id_type.as_str(), encoded);
-        Self {
-            id_type,
-            id_str,
-        }
+        Self { id_type, id_str }
     }
 
     /// Parse the id, if we can.
@@ -97,10 +94,10 @@ impl Id {
 /// The type of object an identifier indentifies.
 #[derive(Clone, Copy, Debug, IntoEnumIterator, PartialEq, Eq, Hash)]
 pub enum IdType {
-    User,
-    Organization,
-    Page,
+    Document,
     LockLease,
+    Organization,
+    User,
 }
 
 impl IdType {
@@ -109,15 +106,15 @@ impl IdType {
     /// let t = IdType::User;
     /// assert_eq!(t.as_str(), "u");
     ///
-    /// let t = IdType::Page;
-    /// assert_eq!(t.as_str(), "p");
+    /// let t = IdType::Document;
+    /// assert_eq!(t.as_str(), "d");
     /// ```
     pub fn as_str(&self) -> &'static str {
         match *self {
-            IdType::User => "u",
-            IdType::Organization => "o",
-            IdType::Page => "p",
+            IdType::Document => "d",
             IdType::LockLease => "ll",
+            IdType::Organization => "o",
+            IdType::User => "u",
         }
     }
 
@@ -162,7 +159,6 @@ pub fn decode_uuid(encoded: &str) -> Option<Uuid> {
     };
     Some(Uuid::from_bytes(bytes))
 }
-
 
 #[cfg(test)]
 mod tests {

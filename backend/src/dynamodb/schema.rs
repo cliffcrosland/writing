@@ -124,13 +124,12 @@ lazy_static! {
         },
         CreateTableInput {
             /*
-             * pages
+             * documents
              *
-             *   id: string, p_<id>
+             *   id: string, d_<id>
              *   org_id: string, o_<id>
              *   title: string
              *   created_by_user_id: string, u_<id>
-             *   current_page_revision_id: string
              *   org_level_sharing_permission: int, enum
              *   created_at: string, iso 8601 date time
              *   updated_at: string, iso 8601 date time
@@ -139,37 +138,20 @@ lazy_static! {
              *
              *   [id]
              *
-             * global secondary indexes:
-             *
-             *   [created_by_user_it, created_at]
              */
-            table_name: "pages".to_string(),
+            table_name: "documents".to_string(),
             attribute_definitions: vec![
                 attr_def("id", "S"),
-                attr_def("created_by_user_id", "S"),
-                attr_def("created_at", "S"),
             ],
             key_schema: vec![key_schema_elem("id", "HASH"),],
-            global_secondary_indexes: Some(vec![GlobalSecondaryIndex {
-                index_name: "pages_cbui_ca-index".to_string(),
-                key_schema: vec![
-                    key_schema_elem("created_by_user_id", "HASH"),
-                    key_schema_elem("created_at", "RANGE"),
-                ],
-                projection: Projection {
-                    projection_type: Some("ALL".to_string()),
-                    ..Default::default()
-                },
-                provisioned_throughput: default_provisioned_throughput(),
-            }]),
             provisioned_throughput: default_provisioned_throughput(),
             ..Default::default()
         },
         CreateTableInput {
             /*
-             * page_user_sharing_permissions
+             * document_user_sharing_permissions
              *
-             *   page_id: string, p_<id>
+             *   doc_id: string, d_<id>
              *   user_id: string, u_<id>
              *   org_id: string, o_<id>
              *   sharing_permission: int, enum
@@ -178,15 +160,15 @@ lazy_static! {
              *
              * primary key:
              *
-             *   [page_id, user_id]
+             *   [doc_id, user_id]
              */
-            table_name: "page_user_sharing_permissions".to_string(),
+            table_name: "document_user_sharing_permissions".to_string(),
             attribute_definitions: vec![
-                attr_def("page_id", "S"),
+                attr_def("doc_id", "S"),
                 attr_def("user_id", "S"),
             ],
             key_schema: vec![
-                key_schema_elem("page_id", "HASH"),
+                key_schema_elem("doc_id", "HASH"),
                 key_schema_elem("user_id", "RANGE"),
             ],
             provisioned_throughput: default_provisioned_throughput(),
@@ -194,53 +176,26 @@ lazy_static! {
         },
         CreateTableInput {
             /*
-             * page_content_chunks
+             * document_revisions
              *
-             *   page_id: string, p_<id>
-             *   org_id: string, o_<id>
-             *   content: string
-             *   chunk_index: int
-             *
-             * primary key:
-             *
-             *   [page_id, chunk_index]
-             *
-             */
-
-            table_name: "page_content_chunks".to_string(),
-            attribute_definitions: vec![
-                attr_def("page_id", "S"),
-                attr_def("chunk_index", "N"),
-            ],
-            key_schema: vec![
-                key_schema_elem("page_id", "HASH"),
-                key_schema_elem("chunk_index", "RANGE"),
-            ],
-            provisioned_throughput: default_provisioned_throughput(),
-            ..Default::default()
-        },
-        CreateTableInput {
-            /*
-             * page_revisions
-             *
-             *   page_id: string, p_<id>
-             *   org_id: string, o_<id>
-             *   id: string, iso 8601 + uuid
-             *   page_edit: binary, protobuf message
+             *   doc_id: string, d_<id>
+             *   revision_number: integer
+             *   change_set: binary, protobuf message
+             *   committed_at: string, iso 8601 date time
              *
              * primary key:
              *
-             *   [page_id, id]
+             *   [doc_id, revision]
              */
 
-            table_name: "page_revisions".to_string(),
+            table_name: "document_revisions".to_string(),
             attribute_definitions: vec![
-                attr_def("page_id", "S"),
-                attr_def("id", "S"),
+                attr_def("doc_id", "S"),
+                attr_def("revision_number", "N"),
             ],
             key_schema: vec![
-                key_schema_elem("page_id", "HASH"),
-                key_schema_elem("id", "RANGE"),
+                key_schema_elem("doc_id", "HASH"),
+                key_schema_elem("revision_number", "RANGE"),
             ],
             provisioned_throughput: default_provisioned_throughput(),
             ..Default::default()

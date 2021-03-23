@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+package writing;
+
+message Document {
+  string id = 1;
+  string org_id = 2;
+  string title = 3;
+  string created_by_user_id = 4;
+  int32 org_level_sharing_permission = 5;
+  string created_at = 6;
+  string updated_at = 7;
+}
+
+// Models for real-time collaborative document editing
+
+message DocumentRevision {
+  string doc_id = 1;
+  int64 revision_number = 2;
+  ChangeSet change_set = 3;
+  string committed_at = 4;
+}
+
+message ChangeSet {
+  repeated ChangeOp ops = 1;
+}
+
+message ChangeOp {
+  oneof change_op {
+    Retain retain = 1;
+    Insert insert = 2;
+    Delete delete = 3;
+  }
+}
+
+message Retain {
+  int64 count = 1;
+}
+
+message Insert {
+  string content = 1;
+}
+
+message Delete {
+  int64 count = 1;
+}
+
+// RPC messages for real-time collaborative document editing
+
+message GetDocumentRequest {
+  string doc_id = 1;
+  string org_id = 2;
+}
+
+message GetDocumentResponse {
+  Document document =  1;
+}
+
+message GetDocumentRevisionsRequest {
+  string doc_id = 1;
+  string org_id = 2;
+  int64 after_revision_number = 3;
+}
+
+message GetDocumentRevisionsResponse {
+  int64 revision_number = 1;
+  repeated DocumentRevision revisions = 2;
+}
+
+message SubmitDocumentChangeSetRequest {
+  string org_id = 1;
+  string doc_id = 2;
+  int64 on_revision_number = 3;
+  ChangeSet change_set = 4;
+}
+
+message SubmitDocumentChangeSetResponse {
+  enum ResponseCode {
+    ACK = 0;
+    NEWLY_DISCOVERED_REVISIONS = 1;
+  }
+  ResponseCode response_code = 1;
+  int64 new_revision_number = 2;
+  repeated DocumentRevision newly_discovered_revisions = 3;
+}

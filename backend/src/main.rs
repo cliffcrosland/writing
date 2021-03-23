@@ -1,4 +1,5 @@
 mod config;
+mod documents;
 mod dynamodb;
 mod http;
 mod ids;

@@ -1,9 +1,14 @@
+// TODO(cliff): Remove once all code is called
+#![allow(dead_code)]
+
 pub mod lock;
 #[cfg(test)]
 pub mod schema;
 
-use rusoto_dynamodb::AttributeValue;
 use std::collections::HashMap;
+
+use bytes::Bytes;
+use rusoto_dynamodb::AttributeValue;
 
 /// In production and staging, DynamoDB table names have a prefix, namely "staging-" and
 /// "production-".
@@ -33,23 +38,34 @@ pub fn test_table_name(test_shard: i32, base_table_name: &str) -> String {
 /// Shorthand to create `AttributeValue` entry with string type `S`.
 pub fn av_s(key: &str, value: &str) -> (String, AttributeValue) {
     (
-        key.to_string(),
+        String::from(key),
         AttributeValue {
-            s: Some(value.to_string()),
+            s: Some(String::from(value)),
             ..Default::default()
         },
     )
 }
 
-/// Shorthand to create `AttributeValue` entry with string type `N`.
+/// Shorthand to create `AttributeValue` entry with number type `N`.
 pub fn av_n<T>(key: &str, number: T) -> (String, AttributeValue)
 where
     T: std::string::ToString,
 {
     (
-        key.to_string(),
+        String::from(key),
         AttributeValue {
             n: Some(number.to_string()),
+            ..Default::default()
+        },
+    )
+}
+
+/// Shorthand to create `AttributeValue` entry with binary type `B`.
+pub fn av_b(key: &str, binary: Bytes) -> (String, AttributeValue) {
+    (
+        String::from(key),
+        AttributeValue {
+            b: Some(binary),
             ..Default::default()
         },
     )
@@ -86,4 +102,11 @@ where
     let n_value = attribute_value.n.as_ref()?;
     let number = n_value.parse::<T>().ok()?;
     Some(number)
+}
+
+/// Shorthand. Retrieve the `B` binary value for a given ey in a Dynamo item.
+pub fn av_get_b<'a>(item: &'a HashMap<String, AttributeValue>, key: &str) -> Option<&'a Bytes> {
+    let attribute_value = item.get(key)?;
+    let b_value = attribute_value.b.as_ref()?;
+    Some(b_value)
 }

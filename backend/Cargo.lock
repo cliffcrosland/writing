@@ -453,6 +453,7 @@ dependencies = [
  "anyhow",
  "base-62",
  "bcrypt",
+ "bytes 1.0.0",
  "chrono",
  "clap",
  "cookie",

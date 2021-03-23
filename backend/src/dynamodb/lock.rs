@@ -1,3 +1,5 @@
+// TODO(cliff): Do we still need this?
+#![allow(dead_code)]
 //! Distributed locking, powered by DynamoDB.
 //!
 //! # Problem

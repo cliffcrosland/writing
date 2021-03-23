@@ -1,10 +1,10 @@
 #[cfg(test)]
 use chrono::{DateTime, Utc};
 
-use rusoto_dynamodb::{DynamoDb, PutItemInput};
 use crate::dynamodb::{av_map, av_n, av_s, table_name};
 use crate::ids::{Id, IdType};
 use crate::utils;
+use rusoto_dynamodb::{DynamoDb, PutItemInput};
 
 pub async fn create_user(dynamodb_client: &dyn DynamoDb, email: &str, name: &str) -> Id {
     let user_id = Id::new(IdType::User);
