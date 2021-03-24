@@ -1,4 +1,4 @@
-#[cfg(test)]
+#![cfg(test)]
 // Note: The DynamoDB schema in this file exists for the sake of documentation and testing. We do
 // not compile the code in this file into the release binary.
 //

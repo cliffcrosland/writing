@@ -1,6 +1,8 @@
 // TODO(cliff): Remove once this is called by request handlers.
 #![allow(dead_code)]
 
+use std::convert::TryFrom;
+
 use anyhow::Context;
 use bytes::Bytes;
 use prost::Message;
@@ -16,7 +18,27 @@ use crate::proto::writing::{
 };
 use crate::utils::time;
 
-async fn get_document_revisions(
+#[derive(Copy, Clone)]
+pub enum SharingPermission {
+    No = 0,
+    Read = 1,
+    Write = 2,
+}
+
+impl TryFrom<i32> for SharingPermission {
+    type Error = ();
+
+    fn try_from(val: i32) -> Result<Self, Self::Error> {
+        match val {
+            0 => Ok(SharingPermission::No),
+            1 => Ok(SharingPermission::Read),
+            2 => Ok(SharingPermission::Write),
+            _ => Err(()),
+        }
+    }
+}
+
+pub async fn get_document_revisions(
     dynamodb_client: &DynamoDbClient,
     request: &GetDocumentRevisionsRequest,
 ) -> anyhow::Result<GetDocumentRevisionsResponse> {
@@ -80,7 +102,7 @@ async fn get_document_revisions(
     Ok(response)
 }
 
-async fn submit_document_change_set(
+pub async fn submit_document_change_set(
     dynamodb_client: &DynamoDbClient,
     request: &SubmitDocumentChangeSetRequest,
 ) -> anyhow::Result<SubmitDocumentChangeSetResponse> {
@@ -166,34 +188,24 @@ mod tests {
         let db = TestDynamoDb::new().await;
 
         let change_set1 = ChangeSet {
-            ops: vec![
-                ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Insert(Insert {
-                        content: String::from("foo bar"),
-                    })),
-                }
-            ],
+            ops: vec![ChangeOp {
+                change_op: Some(change_op::ChangeOp::Insert(Insert {
+                    content: String::from("foo bar"),
+                })),
+            }],
         };
         let change_set2 = ChangeSet {
             ops: vec![
                 ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Retain(Retain {
-                        count: 3,
-                    })),
+                    change_op: Some(change_op::ChangeOp::Retain(Retain { count: 3 })),
                 },
                 ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Delete(Delete {
-                        count: 4,
-                    })),
+                    change_op: Some(change_op::ChangeOp::Delete(Delete { count: 4 })),
                 },
             ],
         };
-        let change_set_bytes1 = Bytes::from(
-            proto::encode_protobuf_message(&change_set1)?
-        );
-        let change_set_bytes2 = Bytes::from(
-            proto::encode_protobuf_message(&change_set2)?
-        );
+        let change_set_bytes1 = Bytes::from(proto::encode_protobuf_message(&change_set1)?);
+        let change_set_bytes2 = Bytes::from(proto::encode_protobuf_message(&change_set2)?);
 
         let doc_id1 = Id::new(IdType::Document);
         let org_id1 = Id::new(IdType::Organization);
@@ -240,21 +252,28 @@ mod tests {
                 doc_id: String::from(doc_id1.as_str()),
                 org_id: String::from(org_id1.as_str()),
                 after_revision_number: 0,
-            }
-        ).await?;
+            },
+        )
+        .await?;
 
         assert_eq!(response.revision_number, 2);
         assert_eq!(response.revisions.len(), 2);
         assert_eq!(&response.revisions[0].doc_id, doc_id1.as_str());
         assert_eq!(response.revisions[0].revision_number, 1);
-        assert_eq!(response.revisions[0].change_set.as_ref().unwrap(), &change_set1);
+        assert_eq!(
+            response.revisions[0].change_set.as_ref().unwrap(),
+            &change_set1
+        );
         assert_eq!(
             &response.revisions[0].committed_at,
             &time::date_time_iso_str(&dt1)
         );
         assert_eq!(&response.revisions[1].doc_id, doc_id1.as_str());
         assert_eq!(response.revisions[1].revision_number, 2);
-        assert_eq!(response.revisions[1].change_set.as_ref().unwrap(), &change_set2);
+        assert_eq!(
+            response.revisions[1].change_set.as_ref().unwrap(),
+            &change_set2
+        );
         assert_eq!(
             &response.revisions[1].committed_at,
             &time::date_time_iso_str(&dt2)
@@ -268,31 +287,24 @@ mod tests {
         let db = TestDynamoDb::new().await;
 
         let existing_change_set = ChangeSet {
-            ops: vec![
-                ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Insert(Insert {
-                        content: String::from("foo bar"),
-                    })),
-                }
-            ],
+            ops: vec![ChangeOp {
+                change_op: Some(change_op::ChangeOp::Insert(Insert {
+                    content: String::from("foo bar"),
+                })),
+            }],
         };
         let new_change_set = ChangeSet {
             ops: vec![
                 ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Retain(Retain {
-                        count: 3,
-                    })),
+                    change_op: Some(change_op::ChangeOp::Retain(Retain { count: 3 })),
                 },
                 ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Delete(Delete {
-                        count: 4,
-                    })),
+                    change_op: Some(change_op::ChangeOp::Delete(Delete { count: 4 })),
                 },
             ],
         };
-        let existing_change_set_bytes = Bytes::from(
-            proto::encode_protobuf_message(&existing_change_set)?
-        );
+        let existing_change_set_bytes =
+            Bytes::from(proto::encode_protobuf_message(&existing_change_set)?);
 
         let doc_id = Id::new(IdType::Document);
         let org_id = Id::new(IdType::Organization);
@@ -318,8 +330,9 @@ mod tests {
                 org_id: String::from(org_id.as_str()),
                 on_revision_number: 1,
                 change_set: Some(new_change_set.clone()),
-            }
-        ).await?;
+            },
+        )
+        .await?;
 
         assert_eq!(response.response_code(), ResponseCode::Ack);
         assert_eq!(response.new_revision_number, 2);
@@ -331,12 +344,16 @@ mod tests {
                 doc_id: String::from(doc_id.as_str()),
                 org_id: String::from(org_id.as_str()),
                 after_revision_number: 1,
-            }
-        ).await?;
+            },
+        )
+        .await?;
 
         assert_eq!(response.revision_number, 2);
         assert_eq!(response.revisions.len(), 1);
-        assert_eq!(response.revisions[0].change_set.as_ref().unwrap(), &new_change_set);
+        assert_eq!(
+            response.revisions[0].change_set.as_ref().unwrap(),
+            &new_change_set
+        );
 
         Ok(())
     }
@@ -346,43 +363,29 @@ mod tests {
         let db = TestDynamoDb::new().await;
 
         let change_set1 = ChangeSet {
-            ops: vec![
-                ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Insert(Insert {
-                        content: String::from("foo bar"),
-                    })),
-                }
-            ],
+            ops: vec![ChangeOp {
+                change_op: Some(change_op::ChangeOp::Insert(Insert {
+                    content: String::from("foo bar"),
+                })),
+            }],
         };
         let change_set2 = ChangeSet {
             ops: vec![
                 ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Retain(Retain {
-                        count: 3,
-                    })),
+                    change_op: Some(change_op::ChangeOp::Retain(Retain { count: 3 })),
                 },
                 ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Delete(Delete {
-                        count: 4,
-                    })),
+                    change_op: Some(change_op::ChangeOp::Delete(Delete { count: 4 })),
                 },
             ],
         };
         let new_change_set = ChangeSet {
-            ops: vec![
-                ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Delete(Delete {
-                        count: 4,
-                    })),
-                },
-            ],
+            ops: vec![ChangeOp {
+                change_op: Some(change_op::ChangeOp::Delete(Delete { count: 4 })),
+            }],
         };
-        let change_set_bytes1 = Bytes::from(
-            proto::encode_protobuf_message(&change_set1)?
-        );
-        let change_set_bytes2 = Bytes::from(
-            proto::encode_protobuf_message(&change_set2)?
-        );
+        let change_set_bytes1 = Bytes::from(proto::encode_protobuf_message(&change_set1)?);
+        let change_set_bytes2 = Bytes::from(proto::encode_protobuf_message(&change_set2)?);
 
         let doc_id = Id::new(IdType::Document);
         let org_id = Id::new(IdType::Organization);
@@ -421,15 +424,28 @@ mod tests {
                 org_id: String::from(org_id.as_str()),
                 on_revision_number: 1,
                 change_set: Some(new_change_set.clone()),
-            }
-        ).await?;
+            },
+        )
+        .await?;
 
-        assert_eq!(response.response_code(), ResponseCode::NewlyDiscoveredRevisions);
+        assert_eq!(
+            response.response_code(),
+            ResponseCode::NewlyDiscoveredRevisions
+        );
         assert_eq!(response.new_revision_number, 2);
         assert_eq!(response.newly_discovered_revisions.len(), 1);
-        assert_eq!(&response.newly_discovered_revisions[0].doc_id, doc_id.as_str());
+        assert_eq!(
+            &response.newly_discovered_revisions[0].doc_id,
+            doc_id.as_str()
+        );
         assert_eq!(response.newly_discovered_revisions[0].revision_number, 2);
-        assert_eq!(response.newly_discovered_revisions[0].change_set.as_ref().unwrap(), &change_set2);
+        assert_eq!(
+            response.newly_discovered_revisions[0]
+                .change_set
+                .as_ref()
+                .unwrap(),
+            &change_set2
+        );
         assert_eq!(
             &response.newly_discovered_revisions[0].committed_at,
             &time::date_time_iso_str(&dt2)

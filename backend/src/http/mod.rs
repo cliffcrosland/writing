@@ -1,5 +1,6 @@
 pub mod api;
-pub mod basic;
+pub mod app;
+pub mod marketing;
 pub mod sessions;
 
 use actix_session::{CookieSession, Session};
@@ -70,7 +71,6 @@ pub async fn get_session_user(
     })
 }
 
-#[allow(dead_code)]
 pub fn create_protobuf_http_response<M>(message: &M) -> actix_web::Result<HttpResponse>
 where
     M: prost::Message,
