@@ -3,6 +3,8 @@ pub mod app;
 pub mod marketing;
 pub mod sessions;
 
+use std::convert::TryInto;
+
 use actix_session::{CookieSession, Session};
 use actix_web::{error, HttpResponse};
 use rusoto_dynamodb::{DynamoDb, GetItemInput};
@@ -10,12 +12,13 @@ use rusoto_dynamodb::{DynamoDb, GetItemInput};
 use crate::dynamodb::{av_get_n, av_map, av_s, table_name};
 use crate::ids::Id;
 use crate::proto::encode_protobuf_message;
+use crate::users::UserRole;
 use crate::BackendService;
 
 pub struct SessionUser {
     pub user_id: Id,
     pub org_id: Id,
-    pub role: i32, // TODO(cliff): protobuf enum
+    pub role: UserRole,
 }
 
 const SESSION_COOKIE_MAX_AGE: i64 = 30 * 86400; // 30 days
@@ -63,7 +66,11 @@ pub async fn get_session_user(
         return Err(error::ErrorUnauthorized(""));
     }
     let item = output.item.unwrap();
-    let role: i32 = av_get_n(&item, "role").ok_or_else(|| error::ErrorUnauthorized(""))?;
+    let role_val: i32 = av_get_n(&item, "role").ok_or_else(|| error::ErrorUnauthorized(""))?;
+    let role: UserRole = role_val.try_into().map_err(|_| {
+        log::error!("Invalid role value: {}", role_val);
+        error::ErrorUnauthorized("")
+    })?;
     Ok(SessionUser {
         user_id,
         org_id,

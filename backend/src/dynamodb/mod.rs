@@ -1,6 +1,3 @@
-// TODO(cliff): Remove once all code is called
-#![allow(dead_code)]
-
 pub mod lock;
 #[cfg(test)]
 pub mod schema;

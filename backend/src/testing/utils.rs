@@ -109,7 +109,7 @@ async fn create_test_tables(dynamodb_shard: i32, dynamodb_client: &dyn DynamoDb)
         // Local DynamoDB sometimes experiences ephemeral errors when creating tables. Retry a few
         // times until we succeed. Sleep briefly between attempts.
         let mut success = false;
-        for _ in 1..=5 {
+        for _ in 1..=100 {
             let mut table_def = table_def.clone();
             table_def.table_name = test_table_name(dynamodb_shard, &table_def.table_name);
             let result = dynamodb_client.create_table(table_def).await;

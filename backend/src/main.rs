@@ -4,6 +4,7 @@ mod dynamodb;
 mod http;
 mod ids;
 mod proto;
+mod users;
 mod utils;
 
 #[cfg(test)]
