@@ -63,8 +63,9 @@ message GetDocumentRevisionsRequest {
 }
 
 message GetDocumentRevisionsResponse {
-  int64 revision_number = 1;
+  int64 last_revision_number = 1;
   repeated DocumentRevision revisions = 2;
+  bool end_of_revisions = 3;
 }
 
 message SubmitDocumentChangeSetRequest {
@@ -76,10 +77,12 @@ message SubmitDocumentChangeSetRequest {
 
 message SubmitDocumentChangeSetResponse {
   enum ResponseCode {
-    ACK = 0;
-    NEWLY_DISCOVERED_REVISIONS = 1;
+    UNKNOWN = 0;
+    ACK = 1;
+    DISCOVERED_NEW_REVISIONS = 2;
   }
   ResponseCode response_code = 1;
-  int64 new_revision_number = 2;
-  repeated DocumentRevision newly_discovered_revisions = 3;
+  int64 last_revision_number = 2;
+  repeated DocumentRevision revisions = 3;
+  bool end_of_revisions = 4;
 }

@@ -70,8 +70,9 @@ pub async fn get_document_revisions(
         error::ErrorInternalServerError("")
     })?;
     let mut response = GetDocumentRevisionsResponse {
-        revision_number: 0,
+        last_revision_number: 0,
         revisions: Vec::new(),
+        end_of_revisions: output.last_evaluated_key.is_none(),
     };
     if output.items.is_none() {
         return Ok(response);
@@ -102,8 +103,9 @@ pub async fn get_document_revisions(
             change_set: Some(change_set),
             committed_at: String::from(committed_at),
         });
-        response.revision_number = revision_number;
+        response.last_revision_number = revision_number;
     }
+
     Ok(response)
 }
 
@@ -152,8 +154,9 @@ pub async fn submit_document_change_set(
     match result {
         Ok(_) => Ok(SubmitDocumentChangeSetResponse {
             response_code: ResponseCode::Ack.into(),
-            new_revision_number,
-            newly_discovered_revisions: Vec::new(),
+            last_revision_number: new_revision_number,
+            revisions: Vec::new(),
+            end_of_revisions: true,
         }),
         Err(RusotoError::Service(PutItemError::ConditionalCheckFailed(_))) => {
             log::info!(
@@ -169,9 +172,10 @@ pub async fn submit_document_change_set(
             let response =
                 get_document_revisions(dynamodb_client, session_user, &rev_request).await?;
             Ok(SubmitDocumentChangeSetResponse {
-                response_code: ResponseCode::NewlyDiscoveredRevisions.into(),
-                new_revision_number: response.revision_number,
-                newly_discovered_revisions: response.revisions,
+                response_code: ResponseCode::DiscoveredNewRevisions.into(),
+                last_revision_number: response.last_revision_number,
+                revisions: response.revisions,
+                end_of_revisions: response.end_of_revisions,
             })
         }
         Err(e) => {
@@ -397,7 +401,7 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(response.revision_number, 2);
+        assert_eq!(response.last_revision_number, 2);
         assert_eq!(response.revisions.len(), 2);
         assert_eq!(&response.revisions[0].doc_id, doc_id1.as_str());
         assert_eq!(response.revisions[0].revision_number, 1);
@@ -419,6 +423,7 @@ mod tests {
             &response.revisions[1].committed_at,
             &time::date_time_iso_str(&dt2)
         );
+        assert!(response.end_of_revisions);
 
         Ok(())
     }
@@ -496,8 +501,8 @@ mod tests {
         .await?;
 
         assert_eq!(response.response_code(), ResponseCode::Ack);
-        assert_eq!(response.new_revision_number, 2);
-        assert!(response.newly_discovered_revisions.is_empty());
+        assert_eq!(response.last_revision_number, 2);
+        assert!(response.revisions.is_empty());
 
         let response = get_document_revisions(
             &db.dynamodb_client,
@@ -510,12 +515,13 @@ mod tests {
         )
         .await?;
 
-        assert_eq!(response.revision_number, 2);
+        assert_eq!(response.last_revision_number, 2);
         assert_eq!(response.revisions.len(), 1);
         assert_eq!(
             response.revisions[0].change_set.as_ref().unwrap(),
             &new_change_set
         );
+        assert!(response.end_of_revisions);
 
         Ok(())
     }
@@ -612,24 +618,18 @@ mod tests {
 
         assert_eq!(
             response.response_code(),
-            ResponseCode::NewlyDiscoveredRevisions
+            ResponseCode::DiscoveredNewRevisions
         );
-        assert_eq!(response.new_revision_number, 2);
-        assert_eq!(response.newly_discovered_revisions.len(), 1);
+        assert_eq!(response.last_revision_number, 2);
+        assert_eq!(response.revisions.len(), 1);
+        assert_eq!(&response.revisions[0].doc_id, doc_id.as_str());
+        assert_eq!(response.revisions[0].revision_number, 2);
         assert_eq!(
-            &response.newly_discovered_revisions[0].doc_id,
-            doc_id.as_str()
-        );
-        assert_eq!(response.newly_discovered_revisions[0].revision_number, 2);
-        assert_eq!(
-            response.newly_discovered_revisions[0]
-                .change_set
-                .as_ref()
-                .unwrap(),
+            response.revisions[0].change_set.as_ref().unwrap(),
             &change_set2
         );
         assert_eq!(
-            &response.newly_discovered_revisions[0].committed_at,
+            &response.revisions[0].committed_at,
             &time::date_time_iso_str(&dt2)
         );
 
