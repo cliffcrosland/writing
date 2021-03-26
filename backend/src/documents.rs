@@ -19,8 +19,8 @@ use crate::utils::time;
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum SharingPermission {
     No = 0,
-    Read = 1,
-    ReadAndWrite = 2,
+    CanRead = 1,
+    CanEdit = 2,
 }
 
 impl TryFrom<i32> for SharingPermission {
@@ -29,13 +29,25 @@ impl TryFrom<i32> for SharingPermission {
     fn try_from(val: i32) -> Result<Self, Self::Error> {
         match val {
             0 => Ok(SharingPermission::No),
-            1 => Ok(SharingPermission::Read),
-            2 => Ok(SharingPermission::ReadAndWrite),
+            1 => Ok(SharingPermission::CanRead),
+            2 => Ok(SharingPermission::CanEdit),
             _ => Err(()),
         }
     }
 }
 
+/// Read the next page of revisions from the document's revision log.
+///
+/// If the document does not exist, returns 404 Not Found.
+///
+/// If the session user does not have permission to read the document, returns 403 Forbidden.
+///
+/// If an internal server error occurs, returns 500 Internal Server Error.
+///
+/// Upon success, returns up to 1MB of document revisions in order starting after the revision
+/// number given by `request.after_revision_number`.
+///
+/// If there are no more revisions, `end_of_revisions` is set in the response.
 pub async fn get_document_revisions(
     dynamodb_client: &DynamoDbClient,
     session_user: &SessionUser,
@@ -46,7 +58,7 @@ pub async fn get_document_revisions(
         &session_user,
         &request.doc_id,
         &request.org_id,
-        &[SharingPermission::Read, SharingPermission::ReadAndWrite],
+        &[SharingPermission::CanRead, SharingPermission::CanEdit],
     )
     .await?;
 
@@ -109,6 +121,19 @@ pub async fn get_document_revisions(
     Ok(response)
 }
 
+/// Submit a change set to be appended to a document's revision log.
+///
+/// If the document does not exist, returns 404 Not Found.
+///
+/// If the session user does not have permission to write to the document, returns 403 Forbidden.
+///
+/// If an internal server error occurs, returns 500 Internal Server Error.
+///
+/// If the change is not based on the latest revision of the document, returns status code
+/// `DiscoveredNewRevisions`, along with one page of new revisions.
+///
+/// Otherwise, if the change is based on the latest revision, it will be appended to the end of the
+/// revision log. In this case, returns status code `Ack`.
 pub async fn submit_document_change_set(
     dynamodb_client: &DynamoDbClient,
     session_user: &SessionUser,
@@ -119,7 +144,7 @@ pub async fn submit_document_change_set(
         session_user,
         &request.doc_id,
         &request.org_id,
-        &[SharingPermission::ReadAndWrite],
+        &[SharingPermission::CanEdit],
     )
     .await?;
 
@@ -185,6 +210,27 @@ pub async fn submit_document_change_set(
     }
 }
 
+/// Validates that the given session user has at least one of the given permissions.
+///
+/// Examples `permissions` arguments:
+///
+/// Validate that the user has permission to edit a document.
+/// ```
+/// &[SharingPermission::CanEdit]
+/// ```
+///
+/// Validate that the user has permission either to read or to edit a document.
+/// ```
+/// &[SharingPermission::CanRead, SharingPermission::CanEdit]
+/// ```
+///
+/// If the document does not exist, returns 404 Not Found.
+///
+/// If the user does not have permission, returns 403 Forbidden.
+///
+/// If an internal server error occurs, returns 500 Internal Server Error.
+///
+/// If the user has one of the given permissions, returns `Ok(())`.
 async fn validate_user_has_some_permission(
     dynamodb_client: &DynamoDbClient,
     session_user: &SessionUser,
@@ -330,7 +376,7 @@ mod tests {
                 doc_id: doc_id1.clone(),
                 org_id: org_id1.clone(),
                 created_by_user_id: user_id1.clone(),
-                org_level_sharing_permission: SharingPermission::ReadAndWrite,
+                org_level_sharing_permission: SharingPermission::CanEdit,
             },
         )
         .await?;
@@ -350,7 +396,7 @@ mod tests {
                 doc_id: doc_id2.clone(),
                 org_id: org_id2.clone(),
                 created_by_user_id: user_id2.clone(),
-                org_level_sharing_permission: SharingPermission::ReadAndWrite,
+                org_level_sharing_permission: SharingPermission::CanEdit,
             },
         )
         .await?;
@@ -442,7 +488,7 @@ mod tests {
                 doc_id: doc_id.clone(),
                 org_id: org_id.clone(),
                 created_by_user_id: user_id.clone(),
-                org_level_sharing_permission: SharingPermission::ReadAndWrite,
+                org_level_sharing_permission: SharingPermission::CanEdit,
             },
         )
         .await?;
@@ -570,7 +616,7 @@ mod tests {
                 doc_id: doc_id.clone(),
                 org_id: org_id.clone(),
                 created_by_user_id: user_id.clone(),
-                org_level_sharing_permission: SharingPermission::ReadAndWrite,
+                org_level_sharing_permission: SharingPermission::CanEdit,
             },
         )
         .await?;
@@ -667,7 +713,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::Read],
+            &[SharingPermission::CanRead],
         )
         .await;
 
@@ -682,7 +728,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::Read],
+            &[SharingPermission::CanRead],
         )
         .await;
 
@@ -709,13 +755,13 @@ mod tests {
                 doc_id: doc_id.clone(),
                 org_id: org_id.clone(),
                 created_by_user_id: created_by_user_id.clone(),
-                org_level_sharing_permission: SharingPermission::Read,
+                org_level_sharing_permission: SharingPermission::CanRead,
             },
         )
         .await?;
 
         // User requested permission to read a doc created by someone in her org. The org-level
-        // permission is Read, so should be accepted.
+        // permission is CanRead, so should be accepted.
         let session_user = SessionUser {
             user_id: Id::new(IdType::User),
             org_id: org_id.clone(),
@@ -727,21 +773,21 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::Read],
+            &[SharingPermission::CanRead],
         )
         .await;
 
         assert!(result.is_ok());
 
         // User requested permission to read and write a doc created by someone in her org. The
-        // org-level permission is Read only, and the document was not explicitly shared with the
+        // org-level permission is CanRead only, and the document was not explicitly shared with the
         // user. Should be rejected.
         let result = validate_user_has_some_permission(
             &db.dynamodb_client,
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::ReadAndWrite],
+            &[SharingPermission::CanEdit],
         )
         .await;
 
@@ -782,7 +828,7 @@ mod tests {
                 doc_id: doc_id.clone(),
                 user_id: reader_user_id.clone(),
                 org_id: org_id.clone(),
-                sharing_permission: SharingPermission::Read,
+                sharing_permission: SharingPermission::CanRead,
             },
         )
         .await?;
@@ -799,7 +845,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::Read],
+            &[SharingPermission::CanRead],
         )
         .await;
 
@@ -812,7 +858,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::ReadAndWrite],
+            &[SharingPermission::CanEdit],
         )
         .await;
 
@@ -839,7 +885,7 @@ mod tests {
                 doc_id: doc_id.clone(),
                 org_id: org_id1.clone(),
                 created_by_user_id: created_by_user_id.clone(),
-                org_level_sharing_permission: SharingPermission::Read,
+                org_level_sharing_permission: SharingPermission::CanRead,
             },
         )
         .await?;
@@ -858,7 +904,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id1.as_str(),
-            &[SharingPermission::Read],
+            &[SharingPermission::CanRead],
         )
         .await;
 
@@ -891,7 +937,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::Read],
+            &[SharingPermission::CanRead],
         )
         .await;
 
