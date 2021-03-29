@@ -15,6 +15,7 @@ use crate::proto::encode_protobuf_message;
 use crate::users::UserRole;
 use crate::BackendService;
 
+#[derive(Debug)]
 pub struct SessionUser {
     pub user_id: Id,
     pub org_id: Id,

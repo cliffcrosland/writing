@@ -1,6 +1,6 @@
 use std::convert::TryFrom;
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum UserRole {
     Default = 0,
     Admin = 1,

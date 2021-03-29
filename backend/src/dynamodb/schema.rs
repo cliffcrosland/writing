@@ -132,7 +132,6 @@ lazy_static! {
              *   created_by_user_id: string, u_<id>
              *   org_level_sharing_permission: int, enum
              *   created_at: string, iso 8601 date time
-             *   updated_at: string, iso 8601 date time
              *
              * primary key:
              *

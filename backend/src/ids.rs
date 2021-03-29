@@ -41,7 +41,7 @@ use crate::utils::profanity;
 /// assert_eq!(id.id_type, IdType::Organization);
 /// assert_eq!(id.as_str(), id_str);
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Id {
     pub id_type: IdType,
     id_str: String,

@@ -1,39 +1,82 @@
-use std::convert::{TryFrom, TryInto};
-
 use actix_web::error;
 use bytes::Bytes;
 use prost::Message;
 use rusoto_core::RusotoError;
-use rusoto_dynamodb::{DynamoDb, DynamoDbClient, PutItemError, PutItemInput, QueryInput};
+use rusoto_dynamodb::{
+    DynamoDb, DynamoDbClient, PutItemError, PutItemInput, QueryInput, UpdateItemError,
+    UpdateItemInput,
+};
 
 use crate::dynamodb::{av_b, av_get_b, av_get_n, av_get_s, av_map, av_n, av_s, table_name};
 use crate::http::SessionUser;
+use crate::ids::{Id, IdType};
 use crate::proto;
 use crate::proto::writing::{
-    submit_document_change_set_response::ResponseCode, ChangeSet, DocumentRevision,
+    submit_document_change_set_response::ResponseCode, ChangeSet, CreateDocumentRequest,
+    CreateDocumentResponse, DocumentRevision, DocumentSharingPermission,
     GetDocumentRevisionsRequest, GetDocumentRevisionsResponse, SubmitDocumentChangeSetRequest,
-    SubmitDocumentChangeSetResponse,
+    SubmitDocumentChangeSetResponse, UpdateDocumentTitleRequest, UpdateDocumentTitleResponse,
 };
 use crate::utils::time;
 
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub enum SharingPermission {
-    No = 0,
-    CanRead = 1,
-    CanEdit = 2,
-}
-
-impl TryFrom<i32> for SharingPermission {
-    type Error = ();
-
-    fn try_from(val: i32) -> Result<Self, Self::Error> {
-        match val {
-            0 => Ok(SharingPermission::No),
-            1 => Ok(SharingPermission::CanRead),
-            2 => Ok(SharingPermission::CanEdit),
-            _ => Err(()),
-        }
+/// Create a new document with the given title in a given org.
+///
+/// If the title is empty, we use "Untitled Document" as the new title.
+///
+/// If the session user does not have permission to create the document in this org, returns 403
+/// Forbidden.
+///
+/// If an internal server error occurs, returns 500 Internal Server Error.
+///
+/// Upon success, returns the new document's id.
+pub async fn create_document(
+    dynamodb_client: &DynamoDbClient,
+    session_user: &SessionUser,
+    request: &CreateDocumentRequest,
+) -> actix_web::Result<CreateDocumentResponse> {
+    let log_error = |error_message: String| {
+        log::error!(
+            "Error occurred: \"{}\" [create_document] \
+            [session_user: {:?}, request: {:?}]",
+            error_message,
+            session_user,
+            request,
+        );
+    };
+    if session_user.org_id.as_str() != &request.org_id {
+        log_error("org_id mismatch".to_string());
+        return Err(error::ErrorForbidden(""));
     }
+    let title = if request.title.is_empty() {
+        "Untitled Document"
+    } else {
+        &request.title
+    };
+    let doc_id = Id::new(IdType::Document);
+    let now = time::date_time_iso_str(&chrono::Utc::now());
+    let input = PutItemInput {
+        table_name: table_name("documents"),
+        item: av_map(&[
+            av_s("id", doc_id.as_str()),
+            av_s("org_id", &request.org_id),
+            av_s("title", title),
+            av_s("created_by_user_id", session_user.user_id.as_str()),
+            av_n(
+                "org_level_sharing_permission",
+                request.org_level_sharing_permission as i32,
+            ),
+            av_s("created_at", &now),
+            av_s("updated_at", &now),
+        ]),
+        ..Default::default()
+    };
+    dynamodb_client.put_item(input).await.map_err(|e| {
+        log_error(e.to_string());
+        error::ErrorInternalServerError("")
+    })?;
+    Ok(CreateDocumentResponse {
+        doc_id: doc_id.as_str().to_string(),
+    })
 }
 
 /// Read the next page of revisions from the document's revision log.
@@ -58,10 +101,21 @@ pub async fn get_document_revisions(
         &session_user,
         &request.doc_id,
         &request.org_id,
-        &[SharingPermission::CanRead, SharingPermission::CanEdit],
+        &[
+            DocumentSharingPermission::CanView,
+            DocumentSharingPermission::CanEdit,
+        ],
     )
     .await?;
-
+    let log_error = |error_message: String| {
+        log::error!(
+            "Error occurred: \"{}\" [get_document_revisions] \
+            [session_user: {:?}, request: {:?}]",
+            error_message,
+            session_user,
+            request,
+        );
+    };
     let input = QueryInput {
         table_name: table_name("document_revisions"),
         // Need consistent read to make sure we wait for pending writes to the revision log to
@@ -78,7 +132,7 @@ pub async fn get_document_revisions(
         ..Default::default()
     };
     let output = dynamodb_client.query(input).await.map_err(|e| {
-        log::error!("{}", e);
+        log_error(e.to_string());
         error::ErrorInternalServerError("")
     })?;
     let mut response = GetDocumentRevisionsResponse {
@@ -95,10 +149,7 @@ pub async fn get_document_revisions(
     }
 
     let missing_field_error = || {
-        log::error!(
-            "document_revision is missing a field! doc_id: {}",
-            &request.doc_id
-        );
+        log_error("document_revision is missing a field".to_string());
         error::ErrorInternalServerError("")
     };
     for item in items.into_iter() {
@@ -106,7 +157,7 @@ pub async fn get_document_revisions(
         let change_set_binary = av_get_b(&item, "change_set").ok_or_else(missing_field_error)?;
         let committed_at = av_get_s(&item, "committed_at").ok_or_else(missing_field_error)?;
         let change_set = ChangeSet::decode(&change_set_binary[..]).map_err(|e| {
-            log::error!("{}", e);
+            log_error(e.to_string());
             error::ErrorInternalServerError("")
         })?;
         response.revisions.push(DocumentRevision {
@@ -130,7 +181,7 @@ pub async fn get_document_revisions(
 /// If an internal server error occurs, returns 500 Internal Server Error.
 ///
 /// If the change is not based on the latest revision of the document, returns status code
-/// `DiscoveredNewRevisions`, along with one page of new revisions.
+/// `DiscoveredNewRevisions` along with one page of new revisions.
 ///
 /// Otherwise, if the change is based on the latest revision, it will be appended to the end of the
 /// revision log. In this case, returns status code `Ack`.
@@ -144,16 +195,26 @@ pub async fn submit_document_change_set(
         session_user,
         &request.doc_id,
         &request.org_id,
-        &[SharingPermission::CanEdit],
+        &[DocumentSharingPermission::CanEdit],
     )
     .await?;
-
+    let log_error = |error_message: String| {
+        log::error!(
+            "Error occurred: \"{}\" [submit_document_change_set] \
+            [session_user: {:?}, request: {{org_id: {}, doc_id: {}, on_revision_number: {}}}]",
+            error_message,
+            session_user,
+            &request.org_id,
+            &request.doc_id,
+            request.on_revision_number,
+        );
+    };
     let change_set = request
         .change_set
         .as_ref()
         .ok_or_else(|| error::ErrorBadRequest(""))?;
     let change_set_binary = proto::encode_protobuf_message(change_set).map_err(|e| {
-        log::error!("{}", e);
+        log_error(e.to_string());
         error::ErrorBadRequest("")
     })?;
     let change_set_binary = Bytes::from(change_set_binary);
@@ -185,9 +246,9 @@ pub async fn submit_document_change_set(
         }),
         Err(RusotoError::Service(PutItemError::ConditionalCheckFailed(_))) => {
             log::info!(
-                "doc_id: {} - Conditional check failed. Another revision was committed before ours. \
-                Getting new revisions.",
-                &request.doc_id,
+                "Conditional check failed. Another revision was committed before ours. \
+                Getting new revisions. [request: {:?}]",
+                &request,
             );
             let rev_request = GetDocumentRevisionsRequest {
                 org_id: request.org_id.clone(),
@@ -204,7 +265,68 @@ pub async fn submit_document_change_set(
             })
         }
         Err(e) => {
-            log::error!("{}", e);
+            log_error(e.to_string());
+            Err(error::ErrorInternalServerError(""))
+        }
+    }
+}
+
+/// Update the title of a document.
+///
+/// If new title is empty, we use "Untitled Document" as the new title.
+///
+/// If the session user does not have permission to update the document, returns 403 Forbidden.
+///
+/// If an internal server error occurs, returns 500 Internal Server Error.
+///
+/// Upon success, returns default response.
+pub async fn update_document_title(
+    dynamodb_client: &DynamoDbClient,
+    session_user: &SessionUser,
+    request: &UpdateDocumentTitleRequest,
+) -> actix_web::Result<UpdateDocumentTitleResponse> {
+    validate_user_has_some_permission(
+        dynamodb_client,
+        session_user,
+        &request.doc_id,
+        &request.org_id,
+        &[DocumentSharingPermission::CanEdit],
+    )
+    .await?;
+    let log_error = |error_message: String| {
+        log::error!(
+            "Error occurred: \"{}\" [update_document_title] \
+            [session_user: {:?}, request: {:?}]",
+            error_message,
+            session_user,
+            request,
+        );
+    };
+    let new_title = if request.new_title.is_empty() {
+        "Untitled Document"
+    } else {
+        &request.new_title
+    };
+    let input = UpdateItemInput {
+        table_name: table_name("documents"),
+        key: av_map(&[av_s("id", &request.doc_id)]),
+        condition_expression: Some(String::from("org_id = :org_id")),
+        update_expression: Some(String::from("SET title = :new_title")),
+        expression_attribute_values: Some(av_map(&[
+            av_s(":org_id", &request.org_id),
+            av_s(":new_title", new_title),
+        ])),
+        ..Default::default()
+    };
+    let result = dynamodb_client.update_item(input).await;
+    match result {
+        Ok(_) => Ok(UpdateDocumentTitleResponse {}),
+        Err(RusotoError::Service(UpdateItemError::ConditionalCheckFailed(_))) => {
+            log_error("Trying to update doc in a different org?".to_string());
+            Err(error::ErrorNotFound(""))
+        }
+        Err(e) => {
+            log_error(e.to_string());
             Err(error::ErrorInternalServerError(""))
         }
     }
@@ -212,16 +334,16 @@ pub async fn submit_document_change_set(
 
 /// Validates that the given session user has at least one of the given permissions.
 ///
-/// Examples `permissions` arguments:
+/// Examples of `permissions` arguments:
 ///
 /// Validate that the user has permission to edit a document.
 /// ```
-/// &[SharingPermission::CanEdit]
+/// &[DocumentSharingPermission::CanEdit]
 /// ```
 ///
 /// Validate that the user has permission either to read or to edit a document.
 /// ```
-/// &[SharingPermission::CanRead, SharingPermission::CanEdit]
+/// &[DocumentSharingPermission::CanView, DocumentSharingPermission::CanEdit]
 /// ```
 ///
 /// If the document does not exist, returns 404 Not Found.
@@ -230,14 +352,26 @@ pub async fn submit_document_change_set(
 ///
 /// If an internal server error occurs, returns 500 Internal Server Error.
 ///
-/// If the user has one of the given permissions, returns `Ok(())`.
+/// If the user has at least one of the given permissions, returns `Ok(())`.
 async fn validate_user_has_some_permission(
     dynamodb_client: &DynamoDbClient,
     session_user: &SessionUser,
     doc_id: &str,
     doc_org_id: &str,
-    permissions: &[SharingPermission],
+    permissions: &[DocumentSharingPermission],
 ) -> actix_web::Result<()> {
+    let log_error = |error_message: String| {
+        log::error!(
+            "Error occurred: \"{}\" [validate_user_has_some_permission] \
+            [session_user: {:?}, doc_id: {}, doc_org_id: {}, permissions: {:?}]",
+            error_message,
+            session_user,
+            doc_id,
+            doc_org_id,
+            permissions,
+        );
+    };
+
     // 1. I must belong to the org where the document is stored. Documents in other orgs are
     //    invisible to me.
     if session_user.org_id.as_str() != doc_org_id {
@@ -259,7 +393,7 @@ async fn validate_user_has_some_permission(
         ..Default::default()
     };
     let output = dynamodb_client.query(input).await.map_err(|e| {
-        log::error!("{}", e);
+        log_error(e.to_string());
         error::ErrorInternalServerError("")
     })?;
     if output.items.is_none() || output.count.is_none() || output.count.unwrap() != 1 {
@@ -270,19 +404,26 @@ async fn validate_user_has_some_permission(
 
     // 3. If I created this document, then I have permission.
     // TODO(cliff): Is there anything bad about this rule? Seems pretty powerful.
-    let created_by_user_id =
-        av_get_s(item, "created_by_user_id").ok_or_else(|| error::ErrorNotFound(""))?;
+    let created_by_user_id = av_get_s(item, "created_by_user_id").ok_or_else(|| {
+        log_error("created_by_user_id not found!".to_string());
+        error::ErrorInternalServerError("")
+    })?;
     if created_by_user_id == session_user.user_id.as_str() {
         return Ok(());
     }
 
     // 4. If the document was shared with the entire org, check to see if that gave me
     //    permission.
-    let org_level_sharing_permission: i32 =
+    let org_level_sharing_permission_val: i32 =
         av_get_n(item, "org_level_sharing_permission").ok_or_else(|| error::ErrorNotFound(""))?;
-    let org_level_sharing_permission: SharingPermission = org_level_sharing_permission
-        .try_into()
-        .map_err(|_| error::ErrorForbidden(""))?;
+    let org_level_sharing_permission =
+        DocumentSharingPermission::from_i32(org_level_sharing_permission_val).ok_or_else(|| {
+            log_error(format!(
+                "Detected invalid org_level_sharing_permission in DB! Value: {}",
+                org_level_sharing_permission_val
+            ));
+            error::ErrorInternalServerError("")
+        })?;
     let found_permission_match = permissions
         .iter()
         .any(|p| p == &org_level_sharing_permission);
@@ -304,7 +445,7 @@ async fn validate_user_has_some_permission(
         ..Default::default()
     };
     let output = dynamodb_client.query(input).await.map_err(|e| {
-        log::error!("{}", e);
+        log_error(e.to_string());
         error::ErrorInternalServerError("")
     })?;
     if output.items.is_none() || output.count.is_none() || output.count.unwrap() != 1 {
@@ -312,11 +453,18 @@ async fn validate_user_has_some_permission(
     }
     let items = output.items.unwrap();
     let item = items.first().ok_or_else(|| error::ErrorForbidden(""))?;
-    let sharing_permission: i32 =
-        av_get_n(item, "sharing_permission").ok_or_else(|| error::ErrorForbidden(""))?;
-    let sharing_permission: SharingPermission = sharing_permission
-        .try_into()
-        .map_err(|_| error::ErrorForbidden(""))?;
+    let sharing_permission_val: i32 = av_get_n(item, "sharing_permission").ok_or_else(|| {
+        log_error("missing sharing_permission!".to_string());
+        error::ErrorInternalServerError("")
+    })?;
+    let sharing_permission = DocumentSharingPermission::from_i32(sharing_permission_val)
+        .ok_or_else(|| {
+            log_error(format!(
+                "Detected invalid sharing_permission in DB! Value: {}",
+                sharing_permission_val
+            ));
+            error::ErrorInternalServerError("")
+        })?;
     let found_permission_match = permissions.iter().any(|p| p == &sharing_permission);
     if found_permission_match {
         Ok(())
@@ -334,7 +482,6 @@ mod tests {
 
     use rusoto_dynamodb::AttributeValue;
 
-    use crate::ids::{Id, IdType};
     use crate::proto::writing::{change_op, ChangeOp, ChangeSet, Delete, Insert, Retain};
     use crate::testing::utils::TestDynamoDb;
     use crate::users::UserRole;
@@ -376,7 +523,7 @@ mod tests {
                 doc_id: doc_id1.clone(),
                 org_id: org_id1.clone(),
                 created_by_user_id: user_id1.clone(),
-                org_level_sharing_permission: SharingPermission::CanEdit,
+                org_level_sharing_permission: DocumentSharingPermission::CanEdit,
             },
         )
         .await?;
@@ -396,7 +543,7 @@ mod tests {
                 doc_id: doc_id2.clone(),
                 org_id: org_id2.clone(),
                 created_by_user_id: user_id2.clone(),
-                org_level_sharing_permission: SharingPermission::CanEdit,
+                org_level_sharing_permission: DocumentSharingPermission::CanEdit,
             },
         )
         .await?;
@@ -488,7 +635,7 @@ mod tests {
                 doc_id: doc_id.clone(),
                 org_id: org_id.clone(),
                 created_by_user_id: user_id.clone(),
-                org_level_sharing_permission: SharingPermission::CanEdit,
+                org_level_sharing_permission: DocumentSharingPermission::CanEdit,
             },
         )
         .await?;
@@ -616,7 +763,7 @@ mod tests {
                 doc_id: doc_id.clone(),
                 org_id: org_id.clone(),
                 created_by_user_id: user_id.clone(),
-                org_level_sharing_permission: SharingPermission::CanEdit,
+                org_level_sharing_permission: DocumentSharingPermission::CanEdit,
             },
         )
         .await?;
@@ -696,7 +843,7 @@ mod tests {
                 doc_id: doc_id.clone(),
                 org_id: org_id.clone(),
                 created_by_user_id: created_by_user_id.clone(),
-                org_level_sharing_permission: SharingPermission::No,
+                org_level_sharing_permission: DocumentSharingPermission::None,
             },
         )
         .await?;
@@ -713,7 +860,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::CanRead],
+            &[DocumentSharingPermission::CanView],
         )
         .await;
 
@@ -728,7 +875,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::CanRead],
+            &[DocumentSharingPermission::CanView],
         )
         .await;
 
@@ -755,13 +902,13 @@ mod tests {
                 doc_id: doc_id.clone(),
                 org_id: org_id.clone(),
                 created_by_user_id: created_by_user_id.clone(),
-                org_level_sharing_permission: SharingPermission::CanRead,
+                org_level_sharing_permission: DocumentSharingPermission::CanView,
             },
         )
         .await?;
 
         // User requested permission to read a doc created by someone in her org. The org-level
-        // permission is CanRead, so should be accepted.
+        // permission is CanView, so should be accepted.
         let session_user = SessionUser {
             user_id: Id::new(IdType::User),
             org_id: org_id.clone(),
@@ -773,21 +920,21 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::CanRead],
+            &[DocumentSharingPermission::CanView],
         )
         .await;
 
         assert!(result.is_ok());
 
         // User requested permission to read and write a doc created by someone in her org. The
-        // org-level permission is CanRead only, and the document was not explicitly shared with the
+        // org-level permission is CanView only, and the document was not explicitly shared with the
         // user. Should be rejected.
         let result = validate_user_has_some_permission(
             &db.dynamodb_client,
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::CanEdit],
+            &[DocumentSharingPermission::CanEdit],
         )
         .await;
 
@@ -816,7 +963,7 @@ mod tests {
                 doc_id: doc_id.clone(),
                 org_id: org_id.clone(),
                 created_by_user_id: created_by_user_id.clone(),
-                org_level_sharing_permission: SharingPermission::No,
+                org_level_sharing_permission: DocumentSharingPermission::None,
             },
         )
         .await?;
@@ -828,7 +975,7 @@ mod tests {
                 doc_id: doc_id.clone(),
                 user_id: reader_user_id.clone(),
                 org_id: org_id.clone(),
-                sharing_permission: SharingPermission::CanRead,
+                sharing_permission: DocumentSharingPermission::CanView,
             },
         )
         .await?;
@@ -845,7 +992,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::CanRead],
+            &[DocumentSharingPermission::CanView],
         )
         .await;
 
@@ -858,7 +1005,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::CanEdit],
+            &[DocumentSharingPermission::CanEdit],
         )
         .await;
 
@@ -885,7 +1032,7 @@ mod tests {
                 doc_id: doc_id.clone(),
                 org_id: org_id1.clone(),
                 created_by_user_id: created_by_user_id.clone(),
-                org_level_sharing_permission: SharingPermission::CanRead,
+                org_level_sharing_permission: DocumentSharingPermission::CanView,
             },
         )
         .await?;
@@ -904,7 +1051,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id1.as_str(),
-            &[SharingPermission::CanRead],
+            &[DocumentSharingPermission::CanView],
         )
         .await;
 
@@ -937,7 +1084,7 @@ mod tests {
             &session_user,
             doc_id.as_str(),
             org_id.as_str(),
-            &[SharingPermission::CanRead],
+            &[DocumentSharingPermission::CanView],
         )
         .await;
 
@@ -954,7 +1101,7 @@ mod tests {
         doc_id: Id,
         org_id: Id,
         created_by_user_id: Id,
-        org_level_sharing_permission: SharingPermission,
+        org_level_sharing_permission: DocumentSharingPermission,
     }
 
     async fn create_document(
@@ -987,7 +1134,7 @@ mod tests {
         doc_id: Id,
         user_id: Id,
         org_id: Id,
-        sharing_permission: SharingPermission,
+        sharing_permission: DocumentSharingPermission,
     }
 
     async fn create_document_user_sharing_permission(

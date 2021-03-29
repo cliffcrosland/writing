@@ -7,9 +7,15 @@ message Document {
   string org_id = 2;
   string title = 3;
   string created_by_user_id = 4;
-  int32 org_level_sharing_permission = 5;
+  DocumentSharingPermission org_level_sharing_permission = 5;
   string created_at = 6;
   string updated_at = 7;
+}
+
+enum DocumentSharingPermission {
+  NONE = 0;
+  CAN_VIEW = 1;
+  CAN_EDIT = 2;
 }
 
 // Models for real-time collaborative document editing
@@ -47,6 +53,16 @@ message Delete {
 
 // RPC messages for real-time collaborative document editing
 
+message CreateDocumentRequest {
+  string org_id = 1;
+  string title = 2;
+  DocumentSharingPermission org_level_sharing_permission = 3;
+}
+
+message CreateDocumentResponse {
+  string doc_id = 1;
+}
+
 message GetDocumentRequest {
   string doc_id = 1;
   string org_id = 2;
@@ -69,8 +85,8 @@ message GetDocumentRevisionsResponse {
 }
 
 message SubmitDocumentChangeSetRequest {
-  string org_id = 1;
-  string doc_id = 2;
+  string doc_id = 1;
+  string org_id = 2;
   int64 on_revision_number = 3;
   ChangeSet change_set = 4;
 }
@@ -85,4 +101,13 @@ message SubmitDocumentChangeSetResponse {
   int64 last_revision_number = 2;
   repeated DocumentRevision revisions = 3;
   bool end_of_revisions = 4;
+}
+
+message UpdateDocumentTitleRequest {
+  string doc_id = 1;
+  string org_id = 2;
+  string new_title = 3;
+}
+
+message UpdateDocumentTitleResponse {
 }

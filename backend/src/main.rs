@@ -38,8 +38,10 @@ async fn main() -> anyhow::Result<()> {
                 config().cookie_secret.as_bytes(),
                 config().cookie_secure,
             ))
+            .service(http::api::documents::create_document)
             .service(http::api::documents::get_document_revisions)
             .service(http::api::documents::submit_document_change_set)
+            .service(http::api::documents::update_document_title)
             .service(http::app::home)
             .service(http::marketing::home)
             .service(http::sessions::log_in)
