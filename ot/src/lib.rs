@@ -12,13 +12,6 @@ pub enum OtError {
 /// transforms the local change set so that the local changes may be applied after the remote
 /// changes.
 ///
-/// You can think of a change set as a list of commands to send to an imaginary cursor. The cursor
-/// starts at the beginning of the document, advances a while, inserts some characters, advances
-/// again, deletes some characters, etc. Here are the commands:
-/// - `Retain(count)`: Advance the cursor by `count` characters.
-/// - `Insert(content)`: Insert the string `content` at the current cursor position.
-/// - `Delete(count)`: Delete the next `count` characters after the current cursor position.
-///
 /// # Formal definition of transformation
 ///
 /// A change set can also be thought of as a function `f(x) -> y` that takes a document of length
@@ -120,27 +113,21 @@ pub fn transform(
                         .ok_or_else(|| unexpected_empty_op_error("remote"))?;
                     match remote_op {
                         Op::Insert(remote_insert) => {
-                            if remote_offset > local_op_end {
-                                // NOTE: We use >, not >= here. That way, if a remote insert
-                                // follows immediately after a local retain, the local retain will
-                                // grow by the length of the content of the remote insert.
-                                break;
-                            }
                             transformed_retain_count +=
                                 remote_insert.content.chars().count() as i64;
                             r += 1;
                         }
                         Op::Retain(remote_retain) => {
-                            if remote_offset >= local_op_end {
+                            let remote_op_end = remote_offset + remote_retain.count;
+                            if remote_op_end <= local_op_end {
+                                remote_offset += remote_retain.count;
+                                r += 1;
+                            }
+                            if remote_op_end >= local_op_end {
                                 break;
                             }
-                            remote_offset += remote_retain.count;
-                            r += 1;
                         }
                         Op::Delete(remote_delete) => {
-                            if remote_offset >= local_op_end {
-                                break;
-                            }
                             let (remote_op_start, remote_op_end) =
                                 (remote_offset, remote_offset + remote_delete.count);
                             let overlap_len = get_overlap_len(
@@ -148,8 +135,13 @@ pub fn transform(
                                 (remote_op_start, remote_op_end),
                             );
                             transformed_retain_count -= overlap_len;
-                            remote_offset += remote_delete.count;
-                            r += 1;
+                            if remote_op_end <= local_op_end {
+                                remote_offset += remote_delete.count;
+                                r += 1;
+                            }
+                            if remote_op_end >= local_op_end {
+                                break;
+                            }
                         }
                     }
                 }
@@ -174,9 +166,6 @@ pub fn transform(
                         .ok_or_else(|| unexpected_empty_op_error("remote"))?;
                     match remote_op {
                         Op::Insert(remote_insert) => {
-                            if remote_offset >= local_op_end {
-                                break;
-                            }
                             if remote_retained_overlap > 0 {
                                 transformed.push(ChangeOp {
                                     op: Some(Op::Delete(Delete {
@@ -185,6 +174,10 @@ pub fn transform(
                                 });
                             }
                             if !remote_insert.content.is_empty() {
+                                // TODO(cliff): If the remote change set is degenerate with
+                                // multiple consecutive insertions, this will produce multiple
+                                // consecutive retains in the output. Should we handle this and
+                                // replace multiple consecutive retains with one retain?
                                 transformed.push(ChangeOp {
                                     op: Some(Op::Retain(Retain {
                                         count: remote_insert.content.chars().count() as i64,
@@ -195,9 +188,6 @@ pub fn transform(
                             r += 1;
                         }
                         Op::Retain(remote_retain) => {
-                            if remote_offset >= local_op_end {
-                                break;
-                            }
                             let (remote_op_start, remote_op_end) =
                                 (remote_offset, remote_offset + remote_retain.count);
                             let overlap_len = get_overlap_len(
@@ -205,15 +195,23 @@ pub fn transform(
                                 (remote_op_start, remote_op_end),
                             );
                             remote_retained_overlap += overlap_len;
-                            remote_offset += remote_retain.count;
-                            r += 1;
-                        }
-                        Op::Delete(remote_delete) => {
-                            if remote_offset >= local_op_end {
+                            if remote_op_end <= local_op_end {
+                                remote_offset += remote_retain.count;
+                                r += 1;
+                            }
+                            if remote_op_end >= local_op_end {
                                 break;
                             }
-                            remote_offset += remote_delete.count;
-                            r += 1;
+                        }
+                        Op::Delete(remote_delete) => {
+                            let remote_op_end = remote_offset + remote_delete.count;
+                            if remote_op_end <= local_op_end {
+                                remote_offset += remote_delete.count;
+                                r += 1;
+                            }
+                            if remote_op_end >= local_op_end {
+                                break;
+                            }
                         }
                     }
                 }
@@ -224,6 +222,7 @@ pub fn transform(
                         })),
                     });
                 }
+                local_offset += local_delete.count;
             }
         }
     }
@@ -261,7 +260,7 @@ pub fn transform(
     if transformed_local_len_before != remote_len_after {
         return Err(OtError::PostConditionFailed(format!(
             "The transformed local change set must be based on a document of length {}. Is based \
-            on a document of length: {}",
+            on a document of length {}",
             remote_len_after, transformed_local_len_before
         )));
     }
@@ -271,6 +270,13 @@ pub fn transform(
 
 /// Applies the change set to the document, returning a new document.
 ///
+/// You can think of a change set as a list of commands to send to an imaginary cursor. The cursor
+/// starts at the beginning of the document, advances a while, inserts some characters, advances
+/// again, deletes some characters, etc. Here are the commands:
+/// - `Retain(count)`: Advance the cursor by `count` characters.
+/// - `Insert(content)`: Insert the string `content` at the current cursor position.
+/// - `Delete(count)`: Delete the next `count` characters after the current cursor position.
+///
 /// # Errors
 ///
 /// - Returns `OtError::InvalidInput` when: the change set is incompatible with the document (i.e.
@@ -278,6 +284,7 @@ pub fn transform(
 ///
 /// - Returns `OtError::PostConditionFailed` when the resulting document does not have the same
 /// length as the output document length that the change set should produce.
+///
 pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> {
     let (before_len, after_len) = get_document_length_before_and_after(change_set)?;
     let doc_len = document.chars().count();
@@ -293,6 +300,7 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
         ))
     };
     let mut new_document = String::new();
+    let mut new_doc_len = 0;
     let mut doc_chars = document.chars();
     for change_op in change_set.ops.iter() {
         let op = change_op
@@ -302,6 +310,7 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
         match op {
             Op::Insert(insert) => {
                 new_document.push_str(insert.content.as_str());
+                new_doc_len += insert.content.chars().count();
             }
             Op::Delete(delete) => {
                 for _ in 0..delete.count {
@@ -312,11 +321,11 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
                 for _ in 0..retain.count {
                     let ch = doc_chars.next().ok_or_else(unexpected_missing_char)?;
                     new_document.push(ch);
+                    new_doc_len += 1;
                 }
             }
         }
     }
-    let new_doc_len = new_document.chars().count();
     if after_len as usize != new_doc_len {
         return Err(OtError::PostConditionFailed(format!(
             "After applying changes, the document should have length {}, but it had length {}",
@@ -449,7 +458,6 @@ mod tests {
         assert_eq!(&local_version, "Why, hello, world. Good to see you.");
 
         let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
-        dbg!(&transformed_local_change_set);
         assert!(transformed_local_change_set.is_ok());
         let transformed_local_change_set = transformed_local_change_set.unwrap();
         let transformed_version = apply(&remote_version, &transformed_local_change_set);
