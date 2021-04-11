@@ -32,7 +32,7 @@ message ChangeSet {
 }
 
 message ChangeOp {
-  oneof change_op {
+  oneof op {
     Retain retain = 1;
     Insert insert = 2;
     Delete delete = 3;

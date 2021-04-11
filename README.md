@@ -30,8 +30,6 @@ documentation and related concepts.
 
 
 ## Todos
-- Migrate Postgres code to DynamoDB. I want easy horizontal scalability.
-- Support DynamoDB testing. Table namespace per test thread.
 - Implement backend code for operational transformation protocol and algorithms
   to support real-time collaborative page editing.
 - Create the frontend project.
