@@ -51,6 +51,11 @@ message Delete {
   int64 count = 1;
 }
 
+message Selection {
+  int64 offset = 1;
+  int64 count = 2;
+}
+
 // RPC messages for real-time collaborative document editing
 
 message CreateDocumentRequest {

@@ -1,6 +1,6 @@
 mod proto;
 
-use proto::writing::{change_op::Op, ChangeOp, ChangeSet, Delete, Insert, Retain};
+use proto::writing::{change_op::Op, ChangeOp, ChangeSet, Delete, Insert, Retain, Selection};
 
 #[derive(Debug)]
 pub enum OtError {
@@ -222,8 +222,7 @@ pub fn transform(
         }
     }
 
-    // Any remote ops that remain must be inserts. These become retains in the transformed local
-    // change set.
+    // Any remote ops that remain must be Inserts. These become Retains in the transformed output.
     while r < remote_change_set.ops.len() {
         let remote_change_op = &remote_change_set.ops[r];
         let remote_op = remote_change_op
@@ -454,7 +453,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
         }
     }
 
-    // Any trailing Insert operations in B will be added verbatim to the composed output.
+    // Any remaining operations in B must be Inserts. Add them verbatim to the composed output.
     while b < b_change_set.ops.len() {
         let b_change_op = &b_change_set.ops[b];
         let b_op = b_change_op
@@ -552,6 +551,81 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
     Ok(new_document)
 }
 
+/// Transforms the text selection according to the changes included in the change set.
+///
+/// A selection describes the current cursor position in the text and how many characters are
+/// selected after the cursor.
+///
+/// If the document changes, we may need to adjust a user's cursor position and what text the user
+/// has selected (if any).
+///
+/// # Transformations
+///
+/// Here are the ways that a selection may be transformed by a new change set:
+///
+/// - Insert
+///   - If N characters are inserted before the selection starts, the selection must be translated
+///     to the right by N characters.
+///   - If N characters are inserted within the selection, the selection's size must increase by N.
+///
+/// - Delete
+///   - If N characters are deleted before the selection starts, the selection must be translated
+///     to the left by N characters.
+///   - If N characters are deleted within the selection, the selection's size must decrease by N.
+///
+/// - Retain: No effect on the selection.
+pub fn transform_selection(
+    change_set: &ChangeSet,
+    selection: &Selection,
+) -> Result<Selection, OtError> {
+    let mut change_set_offset = 0;
+    let mut new_selection_offset = selection.offset;
+    let mut new_selection_count = selection.count;
+    let (selection_start, selection_end) = (selection.offset, selection.offset + selection.count);
+    for change_op in change_set.ops.iter() {
+        if change_set_offset >= selection_end {
+            break;
+        }
+        let op = change_op
+            .op
+            .as_ref()
+            .ok_or_else(|| OtError::InvalidInput(String::from("Unexpected missing op")))?;
+        match op {
+            Op::Retain(retain) => {
+                change_set_offset += retain.count;
+                continue;
+            }
+            Op::Insert(insert) => {
+                let insert_chars_count = insert.content.chars().count() as i64;
+                if change_set_offset < selection_start {
+                    new_selection_offset += insert_chars_count;
+                } else {
+                    new_selection_count += insert_chars_count;
+                }
+            }
+            Op::Delete(delete) => {
+                let (delete_op_start, delete_op_end) =
+                    (change_set_offset, change_set_offset + delete.count);
+                let overlap_len = get_overlap_len(
+                    (selection_start, selection_end),
+                    (delete_op_start, delete_op_end),
+                );
+                if delete_op_start < selection_start {
+                    let deleted_count_before =
+                        get_overlap_len((0, selection_start), (delete_op_start, delete_op_end));
+                    new_selection_offset -= deleted_count_before;
+                }
+                new_selection_count -= overlap_len;
+                change_set_offset += delete.count;
+            }
+        }
+    }
+    Ok(Selection {
+        offset: new_selection_offset,
+        count: new_selection_count,
+    })
+}
+
 /// Push a new operation to the end of the `change_ops` list. If the new operation has the same
 /// type as the last operation in `change_ops`, we can extend the last operation instead.
 ///
@@ -622,7 +696,13 @@ fn get_input_output_doc_lengths(change_set: &ChangeSet) -> Result<(i64, i64), Ot
 }
 
 fn get_overlap_len(bounds1: (i64, i64), bounds2: (i64, i64)) -> i64 {
-    std::cmp::min(bounds1.1, bounds2.1) - std::cmp::max(bounds1.0, bounds2.0)
+    let left = std::cmp::max(bounds1.0, bounds2.0);
+    let right = std::cmp::min(bounds1.1, bounds2.1);
+    if right >= left {
+        right - left
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -919,4 +999,163 @@ mod tests {
         let expected = create_change_set(&["D:10", "I:Hello, world!"]);
         assert_eq!(composed_change_set, expected);
     }
+
+    #[test]
+    fn test_transform_selection_insert_before() {
+        let change_set = create_change_set(&["R:5", "I:Hello", "R:5"]);
+        let selection = Selection {
+            offset: 6,
+            count: 2,
+        };
+
+        let new_selection = transform_selection(&change_set, &selection).unwrap();
+        let expected = Selection {
+            offset: 11,
+            count: 2,
+        };
+        assert_eq!(new_selection, expected);
+    }
+
+    #[test]
+    fn test_transform_selection_insert_inside() {
+        let change_set = create_change_set(&["R:5", "I:Hello", "R:5"]);
+        let selection = Selection {
+            offset: 3,
+            count: 3,
+        };
+
+        let new_selection = transform_selection(&change_set, &selection).unwrap();
+        let expected = Selection {
+            offset: 3,
+            count: 8,
+        };
+        assert_eq!(new_selection, expected);
+    }
+
+    #[test]
+    fn test_transform_selection_insert_after() {
+        let change_set = create_change_set(&["R:5", "I:Hello", "R:5"]);
+        let selection = Selection {
+            offset: 2,
+            count: 2,
+        };
+
+        let new_selection = transform_selection(&change_set, &selection).unwrap();
+        let expected = Selection {
+            offset: 2,
+            count: 2,
+        };
+        assert_eq!(new_selection, expected);
+    }
+
+    #[test]
+    fn test_transform_selection_delete_before() {
+        // change set: --xx------
+        // selection:  -----sss--
+        let change_set = create_change_set(&["R:1", "D:2", "R:7"]);
+        let selection = Selection {
+            offset: 5,
+            count: 3,
+        };
+
+        let new_selection = transform_selection(&change_set, &selection).unwrap();
+        let expected = Selection {
+            offset: 3,
+            count: 3,
+        };
+        assert_eq!(new_selection, expected);
+    }
+
+    #[test]
+    fn test_transform_selection_delete_entirely_inside() {
+        // change set: ---xx-----
+        // selection:  --ssssssss
+        let change_set = create_change_set(&["R:3", "D:2", "R:5"]);
+        let selection = Selection {
+            offset: 2,
+            count: 8,
+        };
+
+        let new_selection = transform_selection(&change_set, &selection).unwrap();
+        let expected = Selection {
+            offset: 2,
+            count: 6,
+        };
+        assert_eq!(new_selection, expected);
+    }
+
+    #[test]
+    fn test_transform_selection_delete_overlap_left() {
+        // change set:  ---xxx----
+        // selection:   ----sss---
+        let change_set = create_change_set(&["R:3", "D:3", "R:4"]);
+
+        let selection = Selection {
+            offset: 4,
+            count: 3,
+        };
+
+        let new_selection = transform_selection(&change_set, &selection).unwrap();
+        let expected = Selection {
+            offset: 3,
+            count: 1,
+        };
+        assert_eq!(new_selection, expected);
+    }
+
+    #[test]
+    fn test_transform_selection_delete_overlap_right() {
+        // change set:  -----xxx--
+        // selection:   ----sss---
+        let change_set = create_change_set(&["R:5", "D:3", "R:2"]);
+        let selection = Selection {
+            offset: 4,
+            count: 3,
+        };
+
+        let new_selection = transform_selection(&change_set, &selection).unwrap();
+        let expected = Selection {
+            offset: 4,
+            count: 1,
+        };
+        assert_eq!(new_selection, expected);
+    }
+
+    #[test]
+    fn test_transform_selection_delete_full_overlap() {
+        // change set:  --xxxxxx--
+        // selection:   ---sss----
+        let change_set = create_change_set(&["R:2", "D:6", "R:2"]);
+        let selection = Selection {
+            offset: 3,
+            count: 3,
+        };
+
+        let new_selection = transform_selection(&change_set, &selection).unwrap();
+        let expected = Selection {
+            offset: 2,
+            count: 0,
+        };
+        assert_eq!(new_selection, expected);
+    }
+
+    #[test]
+    fn test_transform_selection_delete_after() {
+        // change set:  -------xx-
+        // selection:   ---sss----
+        let change_set = create_change_set(&["R:7", "D:2", "R:1"]);
+        let selection = Selection {
+            offset: 3,
+            count: 3,
+        };
+
+        let new_selection = transform_selection(&change_set, &selection).unwrap();
+        let expected = Selection {
+            offset: 3,
+            count: 3,
+        };
+        assert_eq!(new_selection, expected);
+    }
+
+    // TODO(cliff): Write exhaustive compose tests
 }
