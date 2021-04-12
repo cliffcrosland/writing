@@ -1,6 +1,6 @@
 mod proto;
 
-use proto::writing::{change_op::Op, ChangeOp, ChangeSet, Delete, Retain};
+use proto::writing::{change_op::Op, ChangeOp, ChangeSet, Delete, Insert, Retain};
 
 #[derive(Debug)]
 pub enum OtError {
@@ -14,8 +14,8 @@ pub enum OtError {
 ///
 /// # Formal definition of transformation
 ///
-/// A change set can also be thought of as a function `f(x) -> y` that takes a document of length
-/// `x` as input and returns a document of length `y` as output.
+/// A change set can be thought of as a function `f(x) -> y` that takes a document of length `x` as
+/// input and returns a document of length `y` as output.
 ///
 /// Let the remote change set be `r(x) -> y`, and let the local change set be `l(x) -> z`. Note
 /// that both of the change sets take the same document length `x` as input.
@@ -53,29 +53,28 @@ pub enum OtError {
 /// # Errors
 ///
 /// - Returns `OtError::InvalidInput` when:
-///   - The local and remote change sets have different base document lengths (i.e. We receive
+///   - The local and remote change sets have different input document lengths (i.e. We receive
 ///   arguments `r(x) -> y` and `l(p) -> q` where `x != p`),
 ///   - A change set contains an empty op.
 ///   - A change set seems malformed.
 ///
-/// - Returns `OtError::PostConditionFailed. when we create a transformed local change set that has
-/// a different base document length than the updated document length of the remote change set.
-/// This means that the transformed local change set cannot be applied after the remote change set,
-/// which is a problem. (i.e. Given `r(x) -> y` and `l(x) -> z`, we created an invalid transformed
-/// local change set `l'(p) -> q` where `y != p`).
+/// - Returns `OtError::PostConditionFailed`. when we create a transformed local change set that
+/// has a different input document length than the updated document length of the remote change
+/// set. This means that the transformed local change set cannot be applied after the remote change
+/// set, which is a problem. (i.e. Given `r(x) -> y` and `l(x) -> z`, we created an invalid
+/// transformed local change set `l'(p) -> q` where `y != p`).
 ///
 pub fn transform(
     remote_change_set: &ChangeSet,
     local_change_set: &ChangeSet,
 ) -> Result<ChangeSet, OtError> {
-    let (remote_len_before, remote_len_after) =
-        get_document_length_before_and_after(remote_change_set)?;
-    let (local_len_before, _) = get_document_length_before_and_after(local_change_set)?;
+    let (remote_len_before, remote_len_after) = get_input_output_doc_lengths(remote_change_set)?;
+    let (local_len_before, _) = get_input_output_doc_lengths(local_change_set)?;
 
     if remote_len_before != local_len_before {
         return Err(OtError::InvalidInput(format!(
             "Both the remote change set and the local change sets must be based on a document of \
-            the same length. Remote base document length: {}, Local base document length: {}",
+            the same length. Remote input document length: {}, Local input document length: {}",
             remote_len_before, local_len_before
         )));
     }
@@ -223,9 +222,8 @@ pub fn transform(
         }
     }
 
-    // Any remaining remote ops should be Inserts. Make them into one Retain in the transformed
-    // local change set.
-    let mut remote_inserted = 0;
+    // Any remote ops that remain must be inserts. These become retains in the transformed local
+    // change set.
     while r < remote_change_set.ops.len() {
         let remote_change_op = &remote_change_set.ops[r];
         let remote_op = remote_change_op
@@ -233,27 +231,20 @@ pub fn transform(
             .as_ref()
             .ok_or_else(|| unexpected_empty_op_error("remote"))?;
         if let Op::Insert(remote_insert) = remote_op {
-            remote_inserted += remote_insert.content.chars().count() as i64;
+            let char_count = remote_insert.content.chars().count() as i64;
+            push_op(&mut transformed, Op::Retain(Retain { count: char_count }))?;
         } else {
-            return Err(OtError::InvalidInput(String::from(
-                "Impossible? Remote change set had retain and/or delete ops beyond the end of the document",
+            return Err(OtError::PostConditionFailed(String::from(
+                "Expected all remaining operations in remote change set to be inserts.",
             )));
         }
         r += 1;
-    }
-    if remote_inserted > 0 {
-        push_op(
-            &mut transformed,
-            Op::Retain(Retain {
-                count: remote_inserted,
-            }),
-        )?;
     }
 
     let transformed_local_change_set = ChangeSet { ops: transformed };
 
     let (transformed_local_len_before, _) =
-        get_document_length_before_and_after(&transformed_local_change_set)?;
+        get_input_output_doc_lengths(&transformed_local_change_set)?;
     if transformed_local_len_before != remote_len_after {
         return Err(OtError::PostConditionFailed(format!(
             "The transformed local change set must be based on a document of length {}. Is based \
@@ -263,6 +254,235 @@ pub fn transform(
     }
 
     Ok(transformed_local_change_set)
+}
+
+/// Composes change sets `A` and `B` into a new change set `AB`. Applying change set `AB` to a
+/// document will have the same effect as applying `A` and then `B` in sequence.
+///
+/// # Formal definition of composition
+///
+/// A change set can be thought of as a function `f(x) -> y` that takes a document of length `x` as
+/// input and returns a document of length `y` as output.
+///
+/// Let change set `A` be a function `A(x) -> y` that takes a document of length `x` as input and
+/// returns a document of length `y` as output.
+///
+/// Let change set `B` be a function `B(y) -> z` that takes a document of length `y` as input and
+/// returns a document of length `z` as output.
+///
+/// Then the function returns a new change set `AB(x) -> z` which is equivalent to `B(A(x)) -> z`.
+///
+/// Note: The input document length of `B` must be equal to the output document length of `A`.
+/// Otherwise, it is not possible to compose `A` and `B`.
+///
+/// # How operations are composed
+///
+/// Here are all of the ways that operations in A and B can be composed:
+///
+/// - Each `Delete` operation in `A` is added verbatim to the composed change set. Characters
+/// deleted in `A` need to be deleted in `AB`.
+///
+/// - Each `Retain` operation in `A` is composed with operations in `B` as follows:
+///   - If it overlaps with an `Insert` in `B`, the `Insert` in `B` is added to the composed change
+///   set. Characters inserted in `B` need to be inserted in `AB`.
+///   - If it overlaps with a `Retain` in `B`, a `Retain` with length equal to the overlap is added
+///   to the composed change set. Characters retained in both `A` and `B` need to be retained in
+///   `AB`.
+///   - If it overlaps with a `Delete` in `B`, a `Delete` with length equal to the overlap is added
+///   to the composed change set. Characters deleted in `B` need to be deleted in `AB`.
+///
+/// - Each `Insert` operation in `A` is composed with operations in `B` as follows:
+///   - If it overlaps with a `Retain` in `B`, all of the characters in the retained region will
+///   remain in the composed insert. Characters retained in `B` need to be retained in `AB`.
+///   - If it overlaps with a `Delete` in `B`, all of the characters in the deleted region will
+///   elided from the composed insert. Characters deleted in `B` need to be deleted in `AB`.
+///   - If it overlaps with an `Insert` in `B`, then the contents of the `Insert` in `B` will be
+///   added into the composed insert at the position where the overlap starts. Characters inserted
+///   in `B` need to be inserted in `AB`.
+///
+/// - Any trailing `Insert` operations in `B` that do not overlap with operations in `A` are added
+/// verbatim to the composed output. Characters inserted in `B` need to be inserted in `AB`.
+///
+/// # Errors
+///
+/// - Returns `OtError::InvalidInput` when:
+///   - The input document length of `B` is not equal to the output document length of `A` (i.e. it
+///   is not possible to compose `A` and `B`).
+///   - A change set contains an empty op.
+///   - A change set seems malformed.
+///
+/// - Returns `OtError::PostConditionFailed` when the composed change set does not have the correct
+/// input and output document lengths.
+///
+pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<ChangeSet, OtError> {
+    let (a_input_len, a_output_len) = get_input_output_doc_lengths(a_change_set)?;
+    let (b_input_len, b_output_len) = get_input_output_doc_lengths(b_change_set)?;
+
+    if a_output_len != b_input_len {
+        return Err(OtError::InvalidInput(format!(
+            "Cannot compose change sets A and B. A.output_len does not equal B.input_len.\
+            A.output_len: {}, B.input_len: {}",
+            a_output_len, b_input_len
+        )));
+    }
+
+    let unexpected_empty_op_error =
+        |name: &str| OtError::InvalidInput(format!("change set {} contained an empty op", name));
+
+    let unexpected_missing_char =
+        || OtError::InvalidInput(String::from("Unexpected missing character in insert"));
+
+    let mut composed: Vec<ChangeOp> = Vec::new();
+    let mut a_offset = 0;
+    let mut b_offset = 0;
+    let mut b = 0;
+    for a_change_op in a_change_set.ops.iter() {
+        let a_op = a_change_op
+            .op
+            .as_ref()
+            .ok_or_else(|| unexpected_empty_op_error("A"))?;
+
+        match a_op {
+            Op::Delete(a_delete) => {
+                push_op(&mut composed, Op::Delete(a_delete.clone()))?;
+                continue;
+            }
+            Op::Retain(a_retain) => {
+                let (a_op_start, a_op_end) = (a_offset, a_offset + a_retain.count);
+                while b < b_change_set.ops.len() {
+                    let b_change_op = &b_change_set.ops[b];
+                    let b_op = b_change_op
+                        .op
+                        .as_ref()
+                        .ok_or_else(|| unexpected_empty_op_error("B"))?;
+                    match b_op {
+                        Op::Insert(b_insert) => {
+                            push_op(
+                                &mut composed,
+                                Op::Insert(Insert {
+                                    content: b_insert.content.clone(),
+                                }),
+                            )?;
+                            b += 1;
+                        }
+                        Op::Retain(b_retain) => {
+                            let (b_op_start, b_op_end) = (b_offset, b_offset + b_retain.count);
+                            let overlap_len =
+                                get_overlap_len((a_op_start, a_op_end), (b_op_start, b_op_end));
+                            push_op(&mut composed, Op::Retain(Retain { count: overlap_len }))?;
+                            if b_op_end > a_op_end {
+                                break;
+                            } else {
+                                b_offset += b_retain.count;
+                                b += 1;
+                            }
+                        }
+                        Op::Delete(b_delete) => {
+                            let (b_op_start, b_op_end) = (b_offset, b_offset + b_delete.count);
+                            let overlap_len =
+                                get_overlap_len((a_op_start, a_op_end), (b_op_start, b_op_end));
+                            push_op(&mut composed, Op::Delete(Delete { count: overlap_len }))?;
+                            if b_op_end > a_op_end {
+                                break;
+                            } else {
+                                b_offset += b_delete.count;
+                                b += 1;
+                            }
+                        }
+                    }
+                }
+                a_offset += a_retain.count;
+            }
+            Op::Insert(a_insert) => {
+                let a_insert_chars_count = a_insert.content.chars().count() as i64;
+                let (a_op_start, a_op_end) = (a_offset, a_offset + a_insert_chars_count);
+                let mut a_insert_chars = a_insert.content.chars();
+                let mut new_insert_content = String::new();
+                while b < b_change_set.ops.len() {
+                    let b_change_op = &b_change_set.ops[b];
+                    let b_op = b_change_op
+                        .op
+                        .as_ref()
+                        .ok_or_else(|| unexpected_empty_op_error("B"))?;
+                    match b_op {
+                        Op::Insert(b_insert) => {
+                            new_insert_content.push_str(&b_insert.content);
+                            b += 1;
+                        }
+                        Op::Retain(b_retain) => {
+                            let (b_op_start, b_op_end) = (b_offset, b_offset + b_retain.count);
+                            let overlap_len =
+                                get_overlap_len((a_op_start, a_op_end), (b_op_start, b_op_end));
+                            for _ in 0..overlap_len {
+                                let ch =
+                                    a_insert_chars.next().ok_or_else(unexpected_missing_char)?;
+                                new_insert_content.push(ch);
+                            }
+                            if b_op_end > a_op_end {
+                                break;
+                            } else {
+                                b_offset += b_retain.count;
+                                b += 1;
+                            }
+                        }
+                        Op::Delete(b_delete) => {
+                            let (b_op_start, b_op_end) = (b_offset, b_offset + b_delete.count);
+                            let overlap_len =
+                                get_overlap_len((a_op_start, a_op_end), (b_op_start, b_op_end));
+                            for _ in 0..overlap_len {
+                                a_insert_chars.next().ok_or_else(unexpected_missing_char)?;
+                            }
+                            if b_op_end > a_op_end {
+                                break;
+                            } else {
+                                b_offset += b_delete.count;
+                                b += 1;
+                            }
+                        }
+                    }
+                }
+                if !new_insert_content.is_empty() {
+                    push_op(
+                        &mut composed,
+                        Op::Insert(Insert {
+                            content: new_insert_content,
+                        }),
+                    )?;
+                }
+                a_offset += a_insert_chars_count;
+            }
+        }
+    }
+
+    // Any trailing Insert operations in B will be added verbatim to the composed output.
+    while b < b_change_set.ops.len() {
+        let b_change_op = &b_change_set.ops[b];
+        let b_op = b_change_op
+            .op
+            .as_ref()
+            .ok_or_else(|| unexpected_empty_op_error("B"))?;
+        if let Op::Insert(_) = b_op {
+            push_op(&mut composed, b_op.clone())?;
+        } else {
+            return Err(OtError::PostConditionFailed(String::from(
+                "Expected all remaining operations in change set B to be inserts.",
+            )));
+        }
+        b += 1;
+    }
+
+    let composed_change_set = ChangeSet { ops: composed };
+
+    let (composed_input_len, composed_output_len) =
+        get_input_output_doc_lengths(&composed_change_set)?;
+    if composed_input_len != a_input_len || composed_output_len != b_output_len {
+        return Err(OtError::PostConditionFailed(format!(
+            "The composed change set must have input_len {} and output_len {}. It had input_len {} \
+            and output_len {}.", a_input_len, b_output_len, composed_input_len, composed_output_len
+        )));
+    }
+
+    Ok(composed_change_set)
 }
 
 /// Applies the change set to the document, returning a new document.
@@ -277,18 +497,18 @@ pub fn transform(
 /// # Errors
 ///
 /// - Returns `OtError::InvalidInput` when: the change set is incompatible with the document (i.e.
-/// the change set has a base document length that is different from the document's length).
+/// the change set has a input document length that is different from the document's length).
 ///
 /// - Returns `OtError::PostConditionFailed` when the resulting document does not have the same
 /// length as the output document length that the change set should produce.
 ///
 pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> {
-    let (before_len, after_len) = get_document_length_before_and_after(change_set)?;
+    let (input_len, output_len) = get_input_output_doc_lengths(change_set)?;
     let doc_len = document.chars().count();
-    if before_len as usize != doc_len {
+    if input_len as usize != doc_len {
         return Err(OtError::InvalidInput(format!(
             "The change set must be based on a document with length {}, but the document had length {}",
-            before_len, doc_len,
+            input_len, doc_len,
         )));
     }
     let unexpected_missing_char = || {
@@ -323,10 +543,10 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
             }
         }
     }
-    if after_len as usize != new_doc_len {
+    if output_len as usize != new_doc_len {
         return Err(OtError::PostConditionFailed(format!(
             "After applying changes, the document should have length {}, but it had length {}",
-            after_len, new_doc_len,
+            output_len, new_doc_len,
         )));
     }
     Ok(new_document)
@@ -340,6 +560,14 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
 /// - Returns `OtError::InvalidInput` when an empty operation is encountered.
 ///
 fn push_op(change_ops: &mut Vec<ChangeOp>, new_op: Op) -> Result<(), OtError> {
+    let is_empty = match &new_op {
+        Op::Insert(insert) => insert.content.is_empty(),
+        Op::Delete(delete) => delete.count == 0,
+        Op::Retain(retain) => retain.count == 0,
+    };
+    if is_empty {
+        return Ok(());
+    }
     if change_ops.is_empty() {
         change_ops.push(ChangeOp { op: Some(new_op) });
         return Ok(());
@@ -365,7 +593,7 @@ fn push_op(change_ops: &mut Vec<ChangeOp>, new_op: Op) -> Result<(), OtError> {
     Ok(())
 }
 
-fn get_document_length_before_and_after(change_set: &ChangeSet) -> Result<(i64, i64), OtError> {
+fn get_input_output_doc_lengths(change_set: &ChangeSet) -> Result<(i64, i64), OtError> {
     let mut retained: i64 = 0;
     let mut deleted: i64 = 0;
     let mut inserted: i64 = 0;
@@ -433,13 +661,13 @@ mod tests {
     }
 
     #[test]
-    fn test_get_document_length_before_and_after() {
+    fn test_get_input_output_doc_lengths() {
         let change_set = create_change_set(&["R:3", "I:Hello", "D:2", "R:6"]);
-        let result = get_document_length_before_and_after(&change_set);
+        let result = get_input_output_doc_lengths(&change_set);
         assert!(result.is_ok());
-        let (before_len, after_len) = result.unwrap();
-        assert_eq!(before_len, 11);
-        assert_eq!(after_len, 14);
+        let (input_len, output_len) = result.unwrap();
+        assert_eq!(input_len, 11);
+        assert_eq!(output_len, 14);
     }
 
     #[test]
@@ -601,7 +829,7 @@ mod tests {
 
         let result = transform(&remote_change_set, &local_change_set);
         match result {
-            Err(OtError::InvalidInput(_)) => {},
+            Err(OtError::InvalidInput(_)) => {}
             _ => {
                 panic!("Unexpected result: {:?}", result);
             }
@@ -609,19 +837,86 @@ mod tests {
     }
 
     #[test]
+    fn test_transform_multiple_trailing_remote_inserts() {
+        let remote_change_set = create_change_set(&["R:10", "I:Hello,", "I: world!"]);
+
+        let local_change_set = create_change_set(&["R:5", "D:5", "I:Greetings!"]);
+
+        let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
+        assert!(transformed_local_change_set.is_ok());
+        let transformed_local_change_set = transformed_local_change_set.unwrap();
+        let expected = create_change_set(&["R:5", "D:5", "R:13", "I:Greetings!"]);
+        assert_eq!(transformed_local_change_set, expected);
+    }
+
+    #[test]
+    fn test_transform_only_inserts() {
+        let remote_change_set = create_change_set(&["I:Hello, ", "I:world!"]);
+
+        let local_change_set = create_change_set(&["I: Good to see you!"]);
+
+        let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
+        assert!(transformed_local_change_set.is_ok());
+        let transformed_local_change_set = transformed_local_change_set.unwrap();
+        let expected = create_change_set(&["I: Good to see you!", "R:13"]);
+        assert_eq!(transformed_local_change_set, expected);
+    }
+
+    #[test]
     fn test_apply_incompatible_change_set_and_document() {
         // Document has length 9.
         let document = "AAABBCCCC";
 
-        // Change set has base document length of 8. Must be 9.
+        // Change set has input document length of 8. Must be 9.
         let change_set = create_change_set(&["R:2", "I:DDD", "D:6"]);
 
         let result = apply(document, &change_set);
         match result {
-            Err(OtError::InvalidInput(_)) => {},
+            Err(OtError::InvalidInput(_)) => {}
             _ => {
                 panic!("Unexpected result: {:?}", result);
             }
         }
+    }
+
+    #[test]
+    fn test_compose() {
+        // Initial document:
+        // "Hello, world!"
+        //
+        // Change Set A:
+        // "Hello, world!" => "Hello there, world!"
+        //
+        // Change Set B:
+        // "Hello there, world!" => "Why, hello there, world! It is nice to see you."
+        //
+        // Composed change set AB:
+        // "Hello, world!" => "Why, hello there, world! It is nice to see you."
+        //
+        let document = "Hello, world!";
+        let change_set_a = create_change_set(&["R:5", "I: there", "R:8"]);
+        let document_v2 = apply(document, &change_set_a).unwrap();
+        assert_eq!(&document_v2, "Hello there, world!");
+
+        let change_set_b =
+            create_change_set(&["I:Why, ", "D:1", "I:h", "R:18", "I: It is nice to see you."]);
+        let document_v3 = apply(&document_v2, &change_set_b).unwrap();
+        assert_eq!(
+            &document_v3,
+            "Why, hello there, world! It is nice to see you."
+        );
+
+        let composed_change_set = compose(&change_set_a, &change_set_b).unwrap();
+        let document_after_compose_change_set = apply(document, &composed_change_set).unwrap();
+        assert_eq!(&document_after_compose_change_set, &document_v3);
+    }
+
+    #[test]
+    fn test_compose_only_deletes_in_change_set_a() {
+        let change_set_a = create_change_set(&["D:10"]);
+        let change_set_b = create_change_set(&["I:Hello, world!"]);
+        let composed_change_set = compose(&change_set_a, &change_set_b).unwrap();
+        let expected = create_change_set(&["D:10", "I:Hello, world!"]);
+        assert_eq!(composed_change_set, expected);
     }
 }
