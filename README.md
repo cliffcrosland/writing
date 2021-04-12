@@ -30,8 +30,6 @@ documentation and related concepts.
 
 
 ## Todos
-- Implement backend code for operational transformation protocol and algorithms
-  to support real-time collaborative page editing.
 - Create the frontend project.
 - Implement frontend code for operational transformation protocol. Consider
   re-using shared Rust library, compiled to WASM.
