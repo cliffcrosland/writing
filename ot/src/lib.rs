@@ -97,8 +97,8 @@ pub fn transform(
             .ok_or_else(|| unexpected_empty_op_error("local"))?;
 
         match local_op {
-            Op::Insert(_) => {
-                transformed.push(local_change_op.clone());
+            Op::Insert(local_insert) => {
+                push_op(&mut transformed, Op::Insert(local_insert.clone()))?;
                 continue;
             }
             Op::Retain(local_retain) => {
@@ -119,12 +119,11 @@ pub fn transform(
                         }
                         Op::Retain(remote_retain) => {
                             let remote_op_end = remote_offset + remote_retain.count;
-                            if remote_op_end <= local_op_end {
+                            if remote_op_end > local_op_end {
+                                break;
+                            } else {
                                 remote_offset += remote_retain.count;
                                 r += 1;
-                            }
-                            if remote_op_end >= local_op_end {
-                                break;
                             }
                         }
                         Op::Delete(remote_delete) => {
@@ -135,22 +134,22 @@ pub fn transform(
                                 (remote_op_start, remote_op_end),
                             );
                             transformed_retain_count -= overlap_len;
-                            if remote_op_end <= local_op_end {
+                            if remote_op_end > local_op_end {
+                                break;
+                            } else {
                                 remote_offset += remote_delete.count;
                                 r += 1;
-                            }
-                            if remote_op_end >= local_op_end {
-                                break;
                             }
                         }
                     }
                 }
                 if transformed_retain_count > 0 {
-                    transformed.push(ChangeOp {
-                        op: Some(Op::Retain(Retain {
+                    push_op(
+                        &mut transformed,
+                        Op::Retain(Retain {
                             count: transformed_retain_count,
-                        })),
-                    });
+                        }),
+                    )?;
                 }
                 local_offset += local_retain.count;
             }
@@ -167,22 +166,20 @@ pub fn transform(
                     match remote_op {
                         Op::Insert(remote_insert) => {
                             if remote_retained_overlap > 0 {
-                                transformed.push(ChangeOp {
-                                    op: Some(Op::Delete(Delete {
+                                push_op(
+                                    &mut transformed,
+                                    Op::Delete(Delete {
                                         count: remote_retained_overlap,
-                                    })),
-                                });
+                                    }),
+                                )?;
                             }
                             if !remote_insert.content.is_empty() {
-                                // TODO(cliff): If the remote change set is degenerate with
-                                // multiple consecutive insertions, this will produce multiple
-                                // consecutive retains in the output. Should we handle this and
-                                // replace multiple consecutive retains with one retain?
-                                transformed.push(ChangeOp {
-                                    op: Some(Op::Retain(Retain {
+                                push_op(
+                                    &mut transformed,
+                                    Op::Retain(Retain {
                                         count: remote_insert.content.chars().count() as i64,
-                                    })),
-                                });
+                                    }),
+                                )?;
                             }
                             remote_retained_overlap = 0;
                             r += 1;
@@ -195,32 +192,31 @@ pub fn transform(
                                 (remote_op_start, remote_op_end),
                             );
                             remote_retained_overlap += overlap_len;
-                            if remote_op_end <= local_op_end {
+                            if remote_op_end > local_op_end {
+                                break;
+                            } else {
                                 remote_offset += remote_retain.count;
                                 r += 1;
-                            }
-                            if remote_op_end >= local_op_end {
-                                break;
                             }
                         }
                         Op::Delete(remote_delete) => {
                             let remote_op_end = remote_offset + remote_delete.count;
-                            if remote_op_end <= local_op_end {
+                            if remote_op_end > local_op_end {
+                                break;
+                            } else {
                                 remote_offset += remote_delete.count;
                                 r += 1;
-                            }
-                            if remote_op_end >= local_op_end {
-                                break;
                             }
                         }
                     }
                 }
                 if remote_retained_overlap > 0 {
-                    transformed.push(ChangeOp {
-                        op: Some(Op::Delete(Delete {
+                    push_op(
+                        &mut transformed,
+                        Op::Delete(Delete {
                             count: remote_retained_overlap,
-                        })),
-                    });
+                        }),
+                    )?;
                 }
                 local_offset += local_delete.count;
             }
@@ -246,11 +242,12 @@ pub fn transform(
         r += 1;
     }
     if remote_inserted > 0 {
-        transformed.push(ChangeOp {
-            op: Some(Op::Retain(Retain {
+        push_op(
+            &mut transformed,
+            Op::Retain(Retain {
                 count: remote_inserted,
-            })),
-        });
+            }),
+        )?;
     }
 
     let transformed_local_change_set = ChangeSet { ops: transformed };
@@ -329,11 +326,43 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
     if after_len as usize != new_doc_len {
         return Err(OtError::PostConditionFailed(format!(
             "After applying changes, the document should have length {}, but it had length {}",
-            after_len,
-            new_doc_len,
+            after_len, new_doc_len,
         )));
     }
     Ok(new_document)
+}
+
+/// Push a new operation to the end of the `change_ops` list. If the new operation has the same
+/// type as the last operation in `change_ops`, we can extend the last operation instead.
+///
+/// # Errors
+///
+/// - Returns `OtError::InvalidInput` when an empty operation is encountered.
+///
+fn push_op(change_ops: &mut Vec<ChangeOp>, new_op: Op) -> Result<(), OtError> {
+    if change_ops.is_empty() {
+        change_ops.push(ChangeOp { op: Some(new_op) });
+        return Ok(());
+    }
+    let last_op =
+        change_ops.last_mut().unwrap().op.as_mut().ok_or_else(|| {
+            OtError::InvalidInput(String::from("change set contained an empty op"))
+        })?;
+    match (last_op, &new_op) {
+        (Op::Insert(last_insert), Op::Insert(new_insert)) => {
+            last_insert.content.push_str(&new_insert.content);
+        }
+        (Op::Delete(last_delete), Op::Delete(new_delete)) => {
+            last_delete.count += new_delete.count;
+        }
+        (Op::Retain(last_retain), Op::Retain(new_retain)) => {
+            last_retain.count += new_retain.count;
+        }
+        _ => {
+            change_ops.push(ChangeOp { op: Some(new_op) });
+        }
+    }
+    Ok(())
 }
 
 fn get_document_length_before_and_after(change_set: &ChangeSet) -> Result<(i64, i64), OtError> {
@@ -373,7 +402,7 @@ mod tests {
     use super::*;
     use crate::proto::writing::{change_op::Op, ChangeOp, Delete, Insert, Retain};
 
-    fn create_change_set(ops: &Vec<&str>) -> ChangeSet {
+    fn create_change_set(ops: &[&str]) -> ChangeSet {
         let ops: Vec<ChangeOp> = ops
             .iter()
             .map(|op| {
@@ -405,12 +434,7 @@ mod tests {
 
     #[test]
     fn test_get_document_length_before_and_after() {
-        let change_set = create_change_set(&vec![
-            "R:3",
-            "I:Hello",
-            "D:2",
-            "R:6",
-        ]);
+        let change_set = create_change_set(&["R:3", "I:Hello", "D:2", "R:6"]);
         let result = get_document_length_before_and_after(&change_set);
         assert!(result.is_ok());
         let (before_len, after_len) = result.unwrap();
@@ -419,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn test_transform() {
+    fn test_basic_transform() {
         // Base document:
         // "Hello, world!"
         //
@@ -434,17 +458,13 @@ mod tests {
         //
         let base_document = "Hello, world!";
 
-        let remote_change_set = create_change_set(&vec![
-            "R:5",
-            "I: there",
-            "R:8",
-        ]);
+        let remote_change_set = create_change_set(&["R:5", "I: there", "R:8"]);
         let remote_version = apply(base_document, &remote_change_set);
         assert!(remote_version.is_ok());
         let remote_version = remote_version.unwrap();
         assert_eq!(&remote_version, "Hello there, world!");
 
-        let local_change_set = create_change_set(&vec![
+        let local_change_set = create_change_set(&[
             "I:Why, ",
             "D:1",
             "I:h",
@@ -463,6 +483,145 @@ mod tests {
         let transformed_version = apply(&remote_version, &transformed_local_change_set);
         assert!(transformed_version.is_ok());
         let transformed_version = transformed_version.unwrap();
-        assert_eq!(&transformed_version, "Why, hello there, world. Good to see you.");
+        assert_eq!(
+            &transformed_version,
+            "Why, hello there, world. Good to see you."
+        );
+    }
+
+    #[test]
+    fn test_transform_remote_insert_before_local_retain() {
+        let remote_change_set = create_change_set(&["I:AAA", "R:10"]);
+
+        let local_change_set = create_change_set(&["R:5", "D:5"]);
+
+        let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
+        assert!(transformed_local_change_set.is_ok());
+        let transformed_local_change_set = transformed_local_change_set.unwrap();
+        let expected = create_change_set(&["R:8", "D:5"]);
+        assert_eq!(transformed_local_change_set, expected);
+    }
+
+    #[test]
+    fn test_transform_remote_insert_inside_local_retain() {
+        let remote_change_set = create_change_set(&["R:2", "I:AAA", "R:8"]);
+
+        let local_change_set = create_change_set(&["R:5", "D:5"]);
+
+        let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
+        assert!(transformed_local_change_set.is_ok());
+        let transformed_local_change_set = transformed_local_change_set.unwrap();
+        let expected = create_change_set(&["R:8", "D:5"]);
+        assert_eq!(transformed_local_change_set, expected);
+    }
+
+    #[test]
+    fn test_transform_remote_insert_after_local_retain() {
+        let remote_change_set = create_change_set(&["R:5", "I:AAA", "R:5"]);
+
+        let local_change_set = create_change_set(&["R:5", "D:5"]);
+
+        let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
+        assert!(transformed_local_change_set.is_ok());
+        let transformed_local_change_set = transformed_local_change_set.unwrap();
+        let expected = create_change_set(&["R:8", "D:5"]);
+        assert_eq!(transformed_local_change_set, expected);
+    }
+
+    #[test]
+    fn test_transform_remote_insert_inside_local_delete() {
+        let remote_change_set = create_change_set(&["R:6", "I:AAA", "R:4"]);
+
+        let local_change_set = create_change_set(&["R:5", "D:5"]);
+
+        let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
+        assert!(transformed_local_change_set.is_ok());
+        let transformed_local_change_set = transformed_local_change_set.unwrap();
+        let expected = create_change_set(&["R:5", "D:1", "R:3", "D:4"]);
+        assert_eq!(transformed_local_change_set, expected);
+    }
+
+    #[test]
+    fn test_transform_remote_insert_after_local_delete() {
+        let remote_change_set = create_change_set(&["R:10", "I:AAA"]);
+
+        let local_change_set = create_change_set(&["R:5", "D:5"]);
+
+        let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
+        assert!(transformed_local_change_set.is_ok());
+        let transformed_local_change_set = transformed_local_change_set.unwrap();
+        let expected = create_change_set(&["R:5", "D:5", "R:3"]);
+        assert_eq!(transformed_local_change_set, expected);
+    }
+
+    #[test]
+    fn test_transform_multiple_consecutive_remote_inserts_in_local_retain() {
+        let remote_change_set = create_change_set(&["R:3", "I:AAA", "I:BB", "I:CCCC", "R:7"]);
+
+        let local_change_set = create_change_set(&["R:5", "D:5"]);
+
+        let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
+        assert!(transformed_local_change_set.is_ok());
+        let transformed_local_change_set = transformed_local_change_set.unwrap();
+        let expected = create_change_set(&["R:14", "D:5"]);
+        assert_eq!(transformed_local_change_set, expected);
+    }
+
+    #[test]
+    fn test_transform_multiple_consecutive_remote_inserts_in_local_delete() {
+        let remote_change_set = create_change_set(&["R:3", "I:AAA", "I:BB", "I:CCCC", "R:7"]);
+
+        let local_change_set = create_change_set(&["D:5", "R:5"]);
+
+        let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
+        assert!(transformed_local_change_set.is_ok());
+        let transformed_local_change_set = transformed_local_change_set.unwrap();
+        let expected = create_change_set(&["D:3", "R:9", "D:2", "R:5"]);
+        assert_eq!(transformed_local_change_set, expected);
+    }
+
+    #[test]
+    fn test_transform_multiple_consecutive_local_inserts() {
+        let remote_change_set = create_change_set(&["R:5", "D:5"]);
+
+        let local_change_set = create_change_set(&["R:2", "I:AAA", "I:BB", "I:CCCC", "R:8"]);
+
+        let transformed_local_change_set = transform(&remote_change_set, &local_change_set);
+        assert!(transformed_local_change_set.is_ok());
+        let transformed_local_change_set = transformed_local_change_set.unwrap();
+        let expected = create_change_set(&["R:2", "I:AAABBCCCC", "R:3"]);
+        assert_eq!(transformed_local_change_set, expected);
+    }
+
+    #[test]
+    fn test_transform_incompatible_change_set_base_doc_lengths() {
+        let remote_change_set = create_change_set(&["R:5", "D:5"]);
+
+        let local_change_set = create_change_set(&["R:2", "I:AAA", "D:3"]);
+
+        let result = transform(&remote_change_set, &local_change_set);
+        match result {
+            Err(OtError::InvalidInput(_)) => {},
+            _ => {
+                panic!("Unexpected result: {:?}", result);
+            }
+        }
+    }
+
+    #[test]
+    fn test_apply_incompatible_change_set_and_document() {
+        // Document has length 9.
+        let document = "AAABBCCCC";
+
+        // Change set has base document length of 8. Must be 9.
+        let change_set = create_change_set(&["R:2", "I:DDD", "D:6"]);
+
+        let result = apply(document, &change_set);
+        match result {
+            Err(OtError::InvalidInput(_)) => {},
+            _ => {
+                panic!("Unexpected result: {:?}", result);
+            }
+        }
     }
 }
