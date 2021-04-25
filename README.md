@@ -30,7 +30,6 @@ documentation and related concepts.
 
 
 ## Todos
-- Create the frontend project.
-- Implement frontend code for operational transformation protocol. Consider
-  re-using shared Rust library, compiled to WASM.
+- Frontend experiment: Create a client that builds a buffer of OT change sets,
+  composes them together, and submits to a backend API.
 - Choose a good name for this project.

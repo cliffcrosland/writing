@@ -8,7 +8,7 @@ edition = "2018"
 
 [dependencies]
 prost = "0.6"
-tonic = "0.3"
+tonic = { version = "0.3", default-features = false, features = ["codegen", "prost"] }
 
 [build-dependencies]
 tonic-build = "0.3"

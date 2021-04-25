@@ -1,6 +1,8 @@
 mod proto;
 
-use proto::writing::{change_op::Op, ChangeOp, ChangeSet, Delete, Insert, Retain, Selection};
+pub use proto::writing as writing_proto;
+
+use writing_proto::{change_op::Op, ChangeOp, ChangeSet, Delete, Insert, Retain, Selection};
 
 #[derive(Debug)]
 pub enum OtError {
@@ -626,13 +628,19 @@ pub fn transform_selection(
     })
 }
 
-/// Push a new operation to the end of the `change_ops` list. If the new operation has the same
-/// type as the last operation in `change_ops`, we can extend the last operation instead.
-///
-/// # Errors
-///
-/// - Returns `OtError::InvalidInput` when an empty operation is encountered.
-///
+impl ChangeSet {
+    /// Push a new operation to the end of the `change_ops` list. If the new operation has the same
+    /// type as the last operation in `change_ops`, we can extend the last operation instead.
+    ///
+    /// # Errors
+    ///
+    /// - Returns `OtError::InvalidInput` when an empty operation is encountered.
+    ///
+    pub fn push_op(&mut self, new_op: Op) -> Result<(), OtError> {
+        push_op(&mut self.ops, new_op)
+    }
+}
+
 fn push_op(change_ops: &mut Vec<ChangeOp>, new_op: Op) -> Result<(), OtError> {
     let is_empty = match &new_op {
         Op::Insert(insert) => insert.content.is_empty(),
@@ -708,7 +716,7 @@ fn get_overlap_len(bounds1: (i64, i64), bounds2: (i64, i64)) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::writing::{change_op::Op, ChangeOp, Delete, Insert, Retain};
+    use crate::writing_proto::{change_op::Op, ChangeOp, Delete, Insert, Retain};
 
     fn create_change_set(ops: &[&str]) -> ChangeSet {
         let ops: Vec<ChangeOp> = ops
