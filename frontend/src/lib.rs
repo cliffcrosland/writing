@@ -1,4 +1,14 @@
+#![recursion_limit = "1024"]
+
+#[global_allocator]
+static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
+
+use std::collections::VecDeque;
+
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+use web_sys::console;
+use web_sys::{Event, HtmlTextAreaElement};
 use yew::events::InputData;
 use yew::prelude::*;
 
@@ -8,51 +18,91 @@ use ot::OtError;
 struct ClientModel {
     link: ComponentLink<Self>,
     value: String,
-    change_set_log: Vec<ChangeSet>,
+    local_change_sets: VecDeque<ChangeSet>,
+    submitted_change_sets: Vec<ChangeSet>,
 }
 
-enum Event {
-    OnComposeClicked,
-    OnInput(InputData),
+enum AppEvent {
+    ComposeClicked,
+    SubmitOneClicked,
+    TextAreaInput(InputData),
+    TextAreaSelect(Event),
 }
 
-impl Component for ClientModel {
-    type Message = Event;
-    type Properties = ();
-    fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
-        Self {
-            link,
-            value: String::new(),
-            change_set_log: Vec::new(),
-        }
-    }
-
-    fn update(&mut self, msg: Self::Message) -> ShouldRender {
+impl ClientModel {
+    fn update_impl(&mut self, msg: AppEvent) -> ShouldRender {
         match msg {
-            Event::OnInput(InputData { value }) if self.value != value => {
+            AppEvent::TextAreaInput(InputData { value }) if self.value != value => {
                 match get_change_set_from_diff(&self.value, &value) {
                     Ok(change_set) => {
-                        self.change_set_log.push(change_set);
+                        self.local_change_sets.push_back(change_set);
                     }
                     Err(e) => {
-                        dbg!(e);
+                        log::error!("Error getting change set from diff: {:?}", e);
                     }
                 }
                 self.value = value;
                 true
             }
-            Event::OnComposeClicked => match compose_change_set_log(&self.change_set_log) {
-                Ok(composed_change_set_log) => {
-                    self.change_set_log = composed_change_set_log;
+            AppEvent::TextAreaSelect(event) => {
+                let target = match event.target() {
+                    Some(target) => target,
+                    None => {
+                        return false;
+                    }
+                };
+                let text_area = match target.dyn_ref::<HtmlTextAreaElement>() {
+                    Some(text_area) => text_area,
+                    None => {
+                        return false;
+                    }
+                };
+                let selection_start = text_area.selection_start();
+                let selection_end = text_area.selection_end();
+                log::info!("Selection start: {:?}", selection_start);
+                log::info!("Selection end: {:?}", selection_end);
+                false
+            }
+            AppEvent::SubmitOneClicked => {
+                if self.local_change_sets.is_empty() {
+                    return false;
+                }
+                let change_set = self.local_change_sets.pop_front().unwrap();
+                self.submitted_change_sets.push(change_set);
+                true
+            }
+            AppEvent::ComposeClicked => match compose_change_sets(&self.local_change_sets) {
+                Ok(composed_local_change_sets) => {
+                    self.local_change_sets = composed_local_change_sets;
                     true
                 }
                 Err(e) => {
-                    dbg!(e);
+                    log::error!("Error composing local change sets: {:?}", e);
                     false
                 }
             },
             _ => false,
         }
+    }
+}
+
+impl Component for ClientModel {
+    type Message = AppEvent;
+    type Properties = ();
+    fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
+        Self {
+            link,
+            value: String::new(),
+            local_change_sets: VecDeque::new(),
+            submitted_change_sets: Vec::new(),
+        }
+    }
+
+    fn update(&mut self, msg: Self::Message) -> ShouldRender {
+        console::time_with_label("update");
+        let should_render = self.update_impl(msg);
+        console::time_end_with_label("update");
+        should_render
     }
 
     fn change(&mut self, _props: Self::Properties) -> ShouldRender {
@@ -64,17 +114,51 @@ impl Component for ClientModel {
 
     fn view(&self) -> Html {
         html! {
-            <>
+            <div>
                 <div>
-                    <textarea oninput=self.link.callback(|input_data| Event::OnInput(input_data))></textarea>
+                    <textarea style="width: 400px; resize: none;"
+                              oninput=self.link.callback(|input_data| AppEvent::TextAreaInput(input_data))
+                              onselect=self.link.callback(|event| AppEvent::TextAreaSelect(event))>
+                    </textarea>
+                    <div>
+                        { format!("value UTF-16 code point length: {}", &self.value.encode_utf16().count()) }
+                    </div>
                 </div>
-                <div>
-                    <button onclick=self.link.callback(|_| Event::OnComposeClicked)>{ "Compose Change Sets" }</button>
+                <div style="display: flex;">
+                    <div style="flex: 50%;">
+                        <h4>{ "Local Change Sets" }</h4>
+                        <div>
+                            <button onclick=self.link.callback(|_| AppEvent::SubmitOneClicked)>{ "Submit One" }</button>
+                        </div>
+                        <div>
+                            <button onclick=self.link.callback(|_| AppEvent::ComposeClicked)>{ "Compose All" }</button>
+                        </div>
+                        {
+                            self.local_change_sets
+                                .iter()
+                                .enumerate()
+                                .rev()
+                                .map(|(i, change_set)| render_change_set(i + 1, change_set))
+                                .collect::<Html>()
+                        }
+                    </div>
+                    <div style="flex: 50%;">
+                        <h4>{ "Submitted Change Sets" }</h4>
+                        <div>
+                            <span>{ "Value: " }</span>
+                            <pre>{apply_change_sets("", &self.submitted_change_sets).unwrap()}</pre>
+                        </div>
+                        {
+                            self.submitted_change_sets
+                                .iter()
+                                .enumerate()
+                                .rev()
+                                .map(|(i, change_set)| render_change_set(i + 1, change_set))
+                                .collect::<Html>()
+                        }
+                    </div>
                 </div>
-                <div>
-                    { self.change_set_log.iter().rev().map(render_change_set).collect::<Html>() }
-                </div>
-            </>
+            </div>
         }
     }
 }
@@ -83,17 +167,25 @@ fn render_change_op(change_op: &ChangeOp) -> Html {
     let content = match &change_op.op {
         Some(Op::Retain(retain)) => format!("Retain({})", retain.count),
         Some(Op::Delete(delete)) => format!("Delete({})", delete.count),
-        Some(Op::Insert(insert)) => format!("Insert(\"{}\")", &insert.content),
+        Some(Op::Insert(insert)) => {
+            let chars: Vec<char> = insert
+                .content
+                .iter()
+                .map(|ch| std::char::from_u32(*ch).unwrap_or(' '))
+                .collect();
+            format!("Insert({:?})", chars)
+        }
         None => "NONE!".to_string(),
     };
     html! {
-        <li> { content } </li>
+        <li>{ content }</li>
     }
 }
 
-fn render_change_set(change_set: &ChangeSet) -> Html {
+fn render_change_set(revision: usize, change_set: &ChangeSet) -> Html {
     html! {
-        <div>
+        <div style="border: 1px solid #ddd;">
+            <div>{ format!("Revision: {}", revision) }</div>
             <ul>
                 { change_set.ops.iter().map(render_change_op).collect::<Html>() }
             </ul>
@@ -125,8 +217,8 @@ fn get_change_set_from_diff(before: &str, after: &str) -> Result<ChangeSet, OtEr
         }
     }
 
-    let before: Vec<char> = before.chars().collect();
-    let after: Vec<char> = after.chars().collect();
+    let before: Vec<u16> = before.encode_utf16().collect();
+    let after: Vec<u16> = after.encode_utf16().collect();
     let num_rows = before.len() + 1;
     let num_cols = after.len() + 1;
 
@@ -206,8 +298,10 @@ fn get_change_set_from_diff(before: &str, after: &str) -> Result<ChangeSet, OtEr
     let retain_op = |count| -> Op { Op::Retain(Retain { count }) };
     let delete_op = |count| -> Op { Op::Delete(Delete { count }) };
     let insert_op = |start, len| -> Op {
-        let content = &after[start..(start + len as usize)];
-        let content: String = content.iter().cloned().collect();
+        let content: Vec<u32> = after[start..(start + len as usize)]
+            .iter()
+            .map(|ch| *ch as u32)
+            .collect();
         Op::Insert(Insert { content })
     };
 
@@ -251,19 +345,34 @@ fn get_change_set_from_diff(before: &str, after: &str) -> Result<ChangeSet, OtEr
     Ok(change_set)
 }
 
-fn compose_change_set_log(change_set_log: &[ChangeSet]) -> Result<Vec<ChangeSet>, OtError> {
-    if change_set_log.is_empty() {
-        return Ok(vec![]);
+fn compose_change_sets(
+    local_change_sets: &VecDeque<ChangeSet>,
+) -> Result<VecDeque<ChangeSet>, OtError> {
+    if local_change_sets.is_empty() {
+        return Ok(VecDeque::new());
     }
-    let mut composed_change_set = ChangeSet { ops: Vec::new() };
-    for change_set in change_set_log.iter() {
+    let mut composed_change_set = local_change_sets[0].clone();
+    for change_set in local_change_sets.iter().skip(1) {
         composed_change_set = ot::compose(&composed_change_set, change_set)?;
     }
-    Ok(vec![composed_change_set])
+    let mut ret = VecDeque::new();
+    if !composed_change_set.ops.is_empty() {
+        ret.push_back(composed_change_set);
+    }
+    Ok(ret)
+}
+
+fn apply_change_sets(start: &str, change_sets: &[ChangeSet]) -> Result<String, OtError> {
+    let mut doc = start.to_string();
+    for change_set in change_sets.iter() {
+        doc = ot::apply(&doc, change_set)?;
+    }
+    Ok(doc)
 }
 
 #[wasm_bindgen(start)]
 pub fn run_app() {
+    wasm_logger::init(wasm_logger::Config::default());
     App::<ClientModel>::new().mount_to_body();
 }
 

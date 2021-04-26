@@ -1,9 +1,33 @@
+//! A library providing operational transformation functions. Allows multiple users to collaborate
+//! on the same document concurrently without conflict.
+//!
+//! # Note about Unicode
+//!
+//! For compatibility with web browsers, all operations in this library apply to UTF-16 code
+//! points.
+//!
+//! For example:
+//! - `Retain({ count: 4 })` retains four UTF-16 code points.
+//! - `Delete({ count: 7 })` deletes seven UTF-16 code points.
+//! - `Selection { offset: 10, count: 3 }` skips ten UTF-16 code points and includes the next
+//! three.
+//! - `Insert({ content: "foo".encode_utf16().map(u16::into).collect() })` inserts the
+//! string "foo", which consists of three UTF-16 code points.
+//!
+//! We use the `std::str::encode_utf16` and `String::from_utf16_lossy` methods to translate between
+//! Rust `str` objects and UTF-16 code point sequences.
+//!
+//! Using `String::from_utf16_lossy` seems dangerous, but we will not lose data if changes
+//! submitted to this library originate from valid web browser UI events. The web browser will not
+//! allow UI actions to modify a DOM node's text such that the text becomes invalid UTF-16.
+
 mod proto;
 
 pub use proto::writing as writing_proto;
 
 use writing_proto::{change_op::Op, ChangeOp, ChangeSet, Delete, Insert, Retain, Selection};
 
+/// An operational transformation error.
 #[derive(Debug)]
 pub enum OtError {
     InvalidInput(String),
@@ -114,8 +138,7 @@ pub fn transform(
                         .ok_or_else(|| unexpected_empty_op_error("remote"))?;
                     match remote_op {
                         Op::Insert(remote_insert) => {
-                            transformed_retain_count +=
-                                remote_insert.content.chars().count() as i64;
+                            transformed_retain_count += remote_insert.content.len() as i64;
                             r += 1;
                         }
                         Op::Retain(remote_retain) => {
@@ -178,7 +201,7 @@ pub fn transform(
                                 push_op(
                                     &mut transformed,
                                     Op::Retain(Retain {
-                                        count: remote_insert.content.chars().count() as i64,
+                                        count: remote_insert.content.len() as i64,
                                     }),
                                 )?;
                             }
@@ -232,7 +255,7 @@ pub fn transform(
             .as_ref()
             .ok_or_else(|| unexpected_empty_op_error("remote"))?;
         if let Op::Insert(remote_insert) = remote_op {
-            let char_count = remote_insert.content.chars().count() as i64;
+            let char_count = remote_insert.content.len() as i64;
             push_op(&mut transformed, Op::Retain(Retain { count: char_count }))?;
         } else {
             return Err(OtError::PostConditionFailed(String::from(
@@ -321,8 +344,8 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
 
     if a_output_len != b_input_len {
         return Err(OtError::InvalidInput(format!(
-            "Cannot compose change sets A and B. A.output_len does not equal B.input_len.\
-            A.output_len: {}, B.input_len: {}",
+            "Cannot compose change sets A and B. Output length of A does not equal \
+            input length of B. Output length of A: {}, Input length of B: {}",
             a_output_len, b_input_len
         )));
     }
@@ -395,10 +418,10 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
                 a_offset += a_retain.count;
             }
             Op::Insert(a_insert) => {
-                let a_insert_chars_count = a_insert.content.chars().count() as i64;
+                let a_insert_chars_count = a_insert.content.len() as i64;
                 let (a_op_start, a_op_end) = (a_offset, a_offset + a_insert_chars_count);
-                let mut a_insert_chars = a_insert.content.chars();
-                let mut new_insert_content = String::new();
+                let mut a_insert_chars = a_insert.content.iter();
+                let mut new_insert_content = Vec::new();
                 while b < b_change_set.ops.len() {
                     let b_change_op = &b_change_set.ops[b];
                     let b_op = b_change_op
@@ -407,7 +430,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
                         .ok_or_else(|| unexpected_empty_op_error("B"))?;
                     match b_op {
                         Op::Insert(b_insert) => {
-                            new_insert_content.push_str(&b_insert.content);
+                            new_insert_content.extend(b_insert.content.iter());
                             b += 1;
                         }
                         Op::Retain(b_retain) => {
@@ -417,7 +440,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
                             for _ in 0..overlap_len {
                                 let ch =
                                     a_insert_chars.next().ok_or_else(unexpected_missing_char)?;
-                                new_insert_content.push(ch);
+                                new_insert_content.push(*ch);
                             }
                             if b_op_end > a_op_end {
                                 break;
@@ -505,7 +528,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
 ///
 pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> {
     let (input_len, output_len) = get_input_output_doc_lengths(change_set)?;
-    let doc_len = document.chars().count();
+    let doc_len = document.encode_utf16().count();
     if input_len as usize != doc_len {
         return Err(OtError::InvalidInput(format!(
             "The change set must be based on a document with length {}, but the document had length {}",
@@ -517,9 +540,9 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
             "Unexpected missing character in document. Pre-condition failed",
         ))
     };
-    let mut new_document = String::new();
+    let mut new_document: Vec<u16> = Vec::new();
     let mut new_doc_len = 0;
-    let mut doc_chars = document.chars();
+    let mut doc_chars = document.encode_utf16();
     for change_op in change_set.ops.iter() {
         let op = change_op
             .op
@@ -527,8 +550,8 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
             .ok_or_else(|| OtError::InvalidInput(String::from("Change set had an empty op")))?;
         match op {
             Op::Insert(insert) => {
-                new_document.push_str(insert.content.as_str());
-                new_doc_len += insert.content.chars().count();
+                new_document.extend(insert.content.iter().map(|ch| *ch as u16));
+                new_doc_len += insert.content.len();
             }
             Op::Delete(delete) => {
                 for _ in 0..delete.count {
@@ -550,7 +573,7 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
             output_len, new_doc_len,
         )));
     }
-    Ok(new_document)
+    Ok(String::from_utf16_lossy(&new_document))
 }
 
 /// Transforms the text selection according to the changes included in the change set.
@@ -598,7 +621,7 @@ pub fn transform_selection(
                 continue;
             }
             Op::Insert(insert) => {
-                let insert_chars_count = insert.content.chars().count() as i64;
+                let insert_chars_count = insert.content.len() as i64;
                 if change_set_offset < selection_start {
                     new_selection_offset += insert_chars_count;
                 } else {
@@ -660,7 +683,7 @@ fn push_op(change_ops: &mut Vec<ChangeOp>, new_op: Op) -> Result<(), OtError> {
         })?;
     match (last_op, &new_op) {
         (Op::Insert(last_insert), Op::Insert(new_insert)) => {
-            last_insert.content.push_str(&new_insert.content);
+            last_insert.content.extend(new_insert.content.iter());
         }
         (Op::Delete(last_delete), Op::Delete(new_delete)) => {
             last_delete.count += new_delete.count;
@@ -685,7 +708,7 @@ fn get_input_output_doc_lengths(change_set: &ChangeSet) -> Result<(i64, i64), Ot
                 retained += retain.count;
             }
             Some(Op::Insert(insert)) => {
-                inserted += insert.content.chars().count() as i64;
+                inserted += insert.content.len() as i64;
             }
             Some(Op::Delete(delete)) => {
                 deleted += delete.count;
@@ -725,7 +748,7 @@ mod tests {
                 if let Some(rest) = op.strip_prefix("I:") {
                     ChangeOp {
                         op: Some(Op::Insert(Insert {
-                            content: String::from(rest),
+                            content: rest.encode_utf16().map(u16::into).collect(),
                         })),
                     }
                 } else if let Some(rest) = op.strip_prefix("R:") {

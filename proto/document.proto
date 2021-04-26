@@ -44,7 +44,15 @@ message Retain {
 }
 
 message Insert {
-  string content = 1;
+  // For compatibility with web browsers, all operations apply to UTF-16 code
+  // points. See rustdocs for the `ot` crate for more information.
+  //
+  // `content` represents a sequence of UTF-16 code points.
+  //
+  // It seems wasteful to use the `uint32` type to encode a UTF-16 code point
+  // (only 16 bits long). We have no other option, but thankfully Protobuf will
+  // use less than 32 bits per integer where possible when encoding the data.
+  repeated uint32 content = 1;
 }
 
 message Delete {
