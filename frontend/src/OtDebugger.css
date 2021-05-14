@@ -1,0 +1,14 @@
+.OtDebugger {
+}
+
+.OtDebugger-body {
+  display: flex
+}
+
+.OtDebugger-clients {
+  flex: 0 1 50%;
+}
+
+.OtDebugger-server {
+  flex: 0 1 50%;
+}
