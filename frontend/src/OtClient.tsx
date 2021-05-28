@@ -42,8 +42,10 @@ class RetainOp {
   }
 }
 
+type Op = DeleteOp | InsertOp | RetainOp;
+
 class ChangeSet {
-  ops: Array<DeleteOp | InsertOp | RetainOp>;
+  ops: Array<Op>;
 
   constructor() {
     this.ops = new Array<Op>();
@@ -77,7 +79,7 @@ function OtClient(props: any) {
   const [selection, setSelection] = useState(initSelection);
   const [value, setValue] = useState('');
   
-  function captureSelection(event) {
+  function captureSelection(event: any) {
     // Capture selection before the input event (i.e. deletion, insertion).
     const newSelection: Selection = {
       start: event.target.selectionStart,
@@ -87,7 +89,7 @@ function OtClient(props: any) {
     setSelection(newSelection);
   }
 
-  function onInput(event) {
+  function onInput(event: any) {
     const newSelection: Selection = {
       start: event.target.selectionStart,
       end: event.target.selectionEnd,
