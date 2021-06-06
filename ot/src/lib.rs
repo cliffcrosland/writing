@@ -111,7 +111,7 @@ pub fn transform(
     // For each local op, we advance through the remote ops until we have found all remote ops that
     // overlap with the local op. We transform the local op based on the overlapping remote ops and
     // advance to the next local op.
-    let mut transformed: Vec<ChangeOp> = Vec::new();
+    let mut transformed = ChangeSet::new();
     let mut local_offset: i64 = 0;
     let mut remote_offset: i64 = 0;
     let mut r = 0;
@@ -123,7 +123,7 @@ pub fn transform(
 
         match local_op {
             Op::Insert(local_insert) => {
-                push_op(&mut transformed, Op::Insert(local_insert.clone()))?;
+                transformed.insert_slice(&local_insert.content);
                 continue;
             }
             Op::Retain(local_retain) => {
@@ -168,12 +168,7 @@ pub fn transform(
                     }
                 }
                 if transformed_retain_count > 0 {
-                    push_op(
-                        &mut transformed,
-                        Op::Retain(Retain {
-                            count: transformed_retain_count,
-                        }),
-                    )?;
+                    transformed.retain(transformed_retain_count);
                 }
                 local_offset += local_retain.count;
             }
@@ -190,20 +185,10 @@ pub fn transform(
                     match remote_op {
                         Op::Insert(remote_insert) => {
                             if remote_retained_overlap > 0 {
-                                push_op(
-                                    &mut transformed,
-                                    Op::Delete(Delete {
-                                        count: remote_retained_overlap,
-                                    }),
-                                )?;
+                                transformed.delete(remote_retained_overlap);
                             }
                             if !remote_insert.content.is_empty() {
-                                push_op(
-                                    &mut transformed,
-                                    Op::Retain(Retain {
-                                        count: remote_insert.content.len() as i64,
-                                    }),
-                                )?;
+                                transformed.retain(remote_insert.content.len() as i64);
                             }
                             remote_retained_overlap = 0;
                             r += 1;
@@ -235,12 +220,7 @@ pub fn transform(
                     }
                 }
                 if remote_retained_overlap > 0 {
-                    push_op(
-                        &mut transformed,
-                        Op::Delete(Delete {
-                            count: remote_retained_overlap,
-                        }),
-                    )?;
+                    transformed.delete(remote_retained_overlap);
                 }
                 local_offset += local_delete.count;
             }
@@ -256,7 +236,7 @@ pub fn transform(
             .ok_or_else(|| unexpected_empty_op_error("remote"))?;
         if let Op::Insert(remote_insert) = remote_op {
             let char_count = remote_insert.content.len() as i64;
-            push_op(&mut transformed, Op::Retain(Retain { count: char_count }))?;
+            transformed.retain(char_count);
         } else {
             return Err(OtError::PostConditionFailed(String::from(
                 "Expected all remaining operations in remote change set to be inserts.",
@@ -265,10 +245,8 @@ pub fn transform(
         r += 1;
     }
 
-    let transformed_local_change_set = ChangeSet { ops: transformed };
-
     let (transformed_local_len_before, _) =
-        get_input_output_doc_lengths(&transformed_local_change_set)?;
+        get_input_output_doc_lengths(&transformed)?;
     if transformed_local_len_before != remote_len_after {
         return Err(OtError::PostConditionFailed(format!(
             "The transformed local change set must be based on a document of length {}. Is based \
@@ -277,7 +255,7 @@ pub fn transform(
         )));
     }
 
-    Ok(transformed_local_change_set)
+    Ok(transformed)
 }
 
 /// Composes change sets `A` and `B` into a new change set `AB`. Applying change set `AB` to a
@@ -356,7 +334,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
     let unexpected_missing_char =
         || OtError::InvalidInput(String::from("Unexpected missing character in insert"));
 
-    let mut composed: Vec<ChangeOp> = Vec::new();
+    let mut composed = ChangeSet::new();
     let mut a_offset = 0;
     let mut b_offset = 0;
     let mut b = 0;
@@ -368,7 +346,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
 
         match a_op {
             Op::Delete(a_delete) => {
-                push_op(&mut composed, Op::Delete(a_delete.clone()))?;
+                composed.delete(a_delete.count);
                 continue;
             }
             Op::Retain(a_retain) => {
@@ -381,19 +359,14 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
                         .ok_or_else(|| unexpected_empty_op_error("B"))?;
                     match b_op {
                         Op::Insert(b_insert) => {
-                            push_op(
-                                &mut composed,
-                                Op::Insert(Insert {
-                                    content: b_insert.content.clone(),
-                                }),
-                            )?;
+                            composed.insert_slice(&b_insert.content);
                             b += 1;
                         }
                         Op::Retain(b_retain) => {
                             let (b_op_start, b_op_end) = (b_offset, b_offset + b_retain.count);
                             let overlap_len =
                                 get_overlap_len((a_op_start, a_op_end), (b_op_start, b_op_end));
-                            push_op(&mut composed, Op::Retain(Retain { count: overlap_len }))?;
+                            composed.retain(overlap_len);
                             if b_op_end > a_op_end {
                                 break;
                             } else {
@@ -405,7 +378,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
                             let (b_op_start, b_op_end) = (b_offset, b_offset + b_delete.count);
                             let overlap_len =
                                 get_overlap_len((a_op_start, a_op_end), (b_op_start, b_op_end));
-                            push_op(&mut composed, Op::Delete(Delete { count: overlap_len }))?;
+                            composed.delete(overlap_len);
                             if b_op_end > a_op_end {
                                 break;
                             } else {
@@ -466,12 +439,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
                     }
                 }
                 if !new_insert_content.is_empty() {
-                    push_op(
-                        &mut composed,
-                        Op::Insert(Insert {
-                            content: new_insert_content,
-                        }),
-                    )?;
+                    composed.insert_vec(new_insert_content);
                 }
                 a_offset += a_insert_chars_count;
             }
@@ -485,8 +453,8 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
             .op
             .as_ref()
             .ok_or_else(|| unexpected_empty_op_error("B"))?;
-        if let Op::Insert(_) = b_op {
-            push_op(&mut composed, b_op.clone())?;
+        if let Op::Insert(b_op_insert) = b_op {
+            composed.insert_slice(&b_op_insert.content);
         } else {
             return Err(OtError::PostConditionFailed(String::from(
                 "Expected all remaining operations in change set B to be inserts.",
@@ -495,10 +463,8 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
         b += 1;
     }
 
-    let composed_change_set = ChangeSet { ops: composed };
-
     let (composed_input_len, composed_output_len) =
-        get_input_output_doc_lengths(&composed_change_set)?;
+        get_input_output_doc_lengths(&composed)?;
     if composed_input_len != a_input_len || composed_output_len != b_output_len {
         return Err(OtError::PostConditionFailed(format!(
             "The composed change set must have input_len {} and output_len {}. It had input_len {} \
@@ -506,7 +472,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
         )));
     }
 
-    Ok(composed_change_set)
+    Ok(composed)
 }
 
 /// Applies the change set to the document, returning a new document.
@@ -652,50 +618,105 @@ pub fn transform_selection(
 }
 
 impl ChangeSet {
-    /// Push a new operation to the end of the `change_ops` list. If the new operation has the same
-    /// type as the last operation in `change_ops`, we can extend the last operation instead.
-    ///
-    /// # Errors
-    ///
-    /// - Returns `OtError::InvalidInput` when an empty operation is encountered.
-    ///
-    pub fn push_op(&mut self, new_op: Op) -> Result<(), OtError> {
-        push_op(&mut self.ops, new_op)
+    /// Creates an empty change set.
+    pub fn new() -> Self {
+        Self { ops: vec![] }
     }
-}
 
-fn push_op(change_ops: &mut Vec<ChangeOp>, new_op: Op) -> Result<(), OtError> {
-    let is_empty = match &new_op {
-        Op::Insert(insert) => insert.content.is_empty(),
-        Op::Delete(delete) => delete.count == 0,
-        Op::Retain(retain) => retain.count == 0,
-    };
-    if is_empty {
-        return Ok(());
+    /// Appends a `Retain` operation to the change set. If the last operation was a `Retain`, it
+    /// will be extended.
+    ///
+    /// If `count` is less than or equal to zero, the change set will not be changed.
+    pub fn retain(&mut self, count: i64) {
+        if count <= 0 {
+            return;
+        }
+        self.push_op(Op::Retain(Retain { count }));
     }
-    if change_ops.is_empty() {
-        change_ops.push(ChangeOp { op: Some(new_op) });
-        return Ok(());
+
+    /// Appends a `Delete` operation to the change set. If the last operation was a `Delete`, it
+    /// will be extended.
+    ///
+    /// If `count` is less than or equal to zero, the change set will not be changed.
+    pub fn delete(&mut self, count: i64) {
+        if count <= 0 {
+            return;
+        }
+        self.push_op(Op::Delete(Delete { count }));
     }
-    let last_op =
-        change_ops.last_mut().unwrap().op.as_mut().ok_or_else(|| {
-            OtError::InvalidInput(String::from("change set contained an empty op"))
-        })?;
-    match (last_op, &new_op) {
-        (Op::Insert(last_insert), Op::Insert(new_insert)) => {
-            last_insert.content.extend(new_insert.content.iter());
+
+    /// Appends an `Insert` operation to the change set. If the last operation was an `Insert`, it
+    /// will be extended to include the new content.
+    pub fn insert(&mut self, content: &str) {
+        self.push_op(Op::Insert(Insert {
+            content: content.encode_utf16().map(u16::into).collect(),
+        }));
+    }
+
+    /// Appends an `Insert` operation to the change set. If the last operation was an `Insert`, it
+    /// will be extended to include the new content.
+    ///
+    /// Moves the content `Vec` into the change set.
+    ///
+    /// Each `u32` element of the `Vec` argument represents a UTF-16 character. We use `u32` here
+    /// instead of `u16` because we use Protobufs for our network transmission format, and
+    /// Protobufs do not support `u16` integers.
+    pub fn insert_vec(&mut self, content: Vec<u32>) {
+        self.push_op(Op::Insert(Insert { content }));
+    }
+
+    /// Appends an `Insert` operation to the change set. If the last operation was an `Insert`, it
+    /// will be extended to include the new content.
+    ///
+    /// Clones the content slice into the change set.
+    ///
+    /// Each `u32` element of the slice argument represents a UTF-16 character. We use `u32` here
+    /// instead of `u16` because we use Protobufs for our network transmission format, and
+    /// Protobufs do not support `u16` integers.
+    pub fn insert_slice(&mut self, content: &[u32]) {
+        self.push_op(Op::Insert(Insert { content: content.to_vec() }));
+    }
+
+    /// Pushes a new operation to the end of the change set. If the new operation has the same type
+    /// as the last operation, we extend the last operation instead.
+    pub fn push_op(&mut self, new_op: Op) {
+        let op_is_empty = match &new_op {
+            Op::Insert(insert) => insert.content.is_empty(),
+            Op::Delete(delete) => delete.count == 0,
+            Op::Retain(retain) => retain.count == 0,
+        };
+        if op_is_empty {
+            return;
         }
-        (Op::Delete(last_delete), Op::Delete(new_delete)) => {
-            last_delete.count += new_delete.count;
+        // Although highly improbable in practice, a change ops list could theoretically contain
+        // degenerate operations that have a missing `op` field. Remove any that exist.
+        while !self.ops.is_empty() {
+            if self.ops.last().unwrap().op.is_some() {
+                break;
+            } else {
+                self.ops.pop();
+            }
         }
-        (Op::Retain(last_retain), Op::Retain(new_retain)) => {
-            last_retain.count += new_retain.count;
+        if self.ops.is_empty() {
+            self.ops.push(ChangeOp { op: Some(new_op) });
+            return;
         }
-        _ => {
-            change_ops.push(ChangeOp { op: Some(new_op) });
+        let last_op = self.ops.last_mut().unwrap().op.as_mut().unwrap();
+        match (last_op, &new_op) {
+            (Op::Insert(last_insert), Op::Insert(new_insert)) => {
+                last_insert.content.extend(new_insert.content.iter());
+            }
+            (Op::Delete(last_delete), Op::Delete(new_delete)) => {
+                last_delete.count += new_delete.count;
+            }
+            (Op::Retain(last_retain), Op::Retain(new_retain)) => {
+                last_retain.count += new_retain.count;
+            }
+            _ => {
+                self.ops.push(ChangeOp { op: Some(new_op) });
+            }
         }
     }
-    Ok(())
 }
 
 fn get_input_output_doc_lengths(change_set: &ChangeSet) -> Result<(i64, i64), OtError> {
