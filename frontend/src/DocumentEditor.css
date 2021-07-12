@@ -1,0 +1,25 @@
+.DocumentEditor {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid;
+}
+
+.DocumentEditor-controls {
+  border: 1px solid;
+  width: 500px;
+}
+
+.DocumentEditor-text {
+  resize: none;
+  width: 50%;
+}
+
+.DocumentEditor-selection {
+  margin: 10px;
+}
+
+.DocumentEditor-historyList {
+  flex-basis: | 0;
+  text-align: left;
+}

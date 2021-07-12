@@ -493,8 +493,14 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
 /// length as the output document length that the change set should produce.
 ///
 pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> {
+    let document_u16: Vec<u16> = document.encode_utf16().collect();
+    apply_vec_u16(&document_u16, change_set)
+        .map(|new_document_u16| String::from_utf16_lossy(&new_document_u16))
+}
+
+pub fn apply_vec_u16(document_u16: &Vec<u16>, change_set: &ChangeSet) -> Result<Vec<u16>, OtError> {
     let (input_len, output_len) = get_input_output_doc_lengths(change_set)?;
-    let doc_len = document.encode_utf16().count();
+    let doc_len = document_u16.len();
     if input_len as usize != doc_len {
         return Err(OtError::InvalidInput(format!(
             "The change set must be based on a document with length {}, but the document had length {}",
@@ -506,9 +512,9 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
             "Unexpected missing character in document. Pre-condition failed",
         ))
     };
-    let mut new_document: Vec<u16> = Vec::new();
+    let mut new_document_u16: Vec<u16> = Vec::new();
     let mut new_doc_len = 0;
-    let mut doc_chars = document.encode_utf16();
+    let mut document_u16_iter = document_u16.iter();
     for change_op in change_set.ops.iter() {
         let op = change_op
             .op
@@ -516,18 +522,18 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
             .ok_or_else(|| OtError::InvalidInput(String::from("Change set had an empty op")))?;
         match op {
             Op::Insert(insert) => {
-                new_document.extend(insert.content.iter().map(|ch| *ch as u16));
+                new_document_u16.extend(insert.content.iter().map(|ch| *ch as u16));
                 new_doc_len += insert.content.len();
             }
             Op::Delete(delete) => {
                 for _ in 0..delete.count {
-                    doc_chars.next().ok_or_else(unexpected_missing_char)?;
+                    document_u16_iter.next().ok_or_else(unexpected_missing_char)?;
                 }
             }
             Op::Retain(retain) => {
                 for _ in 0..retain.count {
-                    let ch = doc_chars.next().ok_or_else(unexpected_missing_char)?;
-                    new_document.push(ch);
+                    let ch = document_u16_iter.next().ok_or_else(unexpected_missing_char)?;
+                    new_document_u16.push(*ch);
                     new_doc_len += 1;
                 }
             }
@@ -539,7 +545,8 @@ pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> 
             output_len, new_doc_len,
         )));
     }
-    Ok(String::from_utf16_lossy(&new_document))
+    Ok(new_document_u16)
+
 }
 
 /// Transforms the text selection according to the changes included in the change set.
@@ -716,6 +723,11 @@ impl ChangeSet {
                 self.ops.push(ChangeOp { op: Some(new_op) });
             }
         }
+    }
+
+    /// Returns true if and only if the change set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.ops.is_empty()
     }
 }
 

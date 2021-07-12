@@ -30,6 +30,9 @@ documentation and related concepts.
 
 
 ## Todos
-- Frontend experiment: Create a client that builds a buffer of OT change sets,
-  composes them together, and submits to a backend API.
+- Frontend
+  - Implement Undo/Redo
+    - Transpose, apply inverse.
+  - Experiment with OtDebugger clients
+  - Build "real" editor that integrates with server.
 - Choose a good name for this project.

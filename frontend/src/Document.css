@@ -1,0 +1,18 @@
+.Document {
+}
+
+.Document-body {
+  display: flex
+}
+
+.Document-clients {
+  flex: 0 1 50%;
+}
+
+.Document-server {
+  flex: 0 1 50%;
+}
+
+.Document-addClient {
+  margin-top: 20px;
+}
