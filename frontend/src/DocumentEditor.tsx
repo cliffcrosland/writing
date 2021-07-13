@@ -12,7 +12,7 @@ function DocumentEditor(props: any) {
     return DocumentEditorModel.new(clientId);
   });
   const [selection, setSelection] = useState(Selection.new(0, 0));
-  const [history, setHistory] = useState(new Array<string>());
+  const [revisions, setRevisions] = useState(new Array<string>());
   
   function captureSelection(event: any) {
     const newSelection = Selection.new(
@@ -45,7 +45,7 @@ function DocumentEditor(props: any) {
 
     setValue(documentEditorModel.getValue());
     setSelection(documentEditorModel.getSelection());
-    setHistory(documentEditorModel.getHistory());
+    setRevisions(documentEditorModel.getRevisions());
   }
 
   return (
@@ -63,10 +63,10 @@ function DocumentEditor(props: any) {
         <div className="DocumentEditor-selection">
           { selection.toString() }
         </div>
-        <div className="DocumentEditor-history">
-          <ul className="DocumentEditor-historyList">
-            {history.map((historyItem, i) =>
-              <li key={i}>{historyItem}</li>
+        <div className="DocumentEditor-revisions">
+          <ul className="DocumentEditor-revisionsList">
+            {revisions.map((revision, i) =>
+              <li key={i}>{revision}</li>
             ).reverse()}
           </ul>
         </div>

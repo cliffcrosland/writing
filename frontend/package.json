@@ -21,8 +21,8 @@
     "build": "react-app-rewired build",
     "test": "react-app-rewired test",
     "eject": "react-scripts eject",
-    "build-wasm-dev": "wasm-pack build ./wasm --target bundler --out-dir ../src/wasm/pkg --dev",
-    "build-wasm-release": "wasm-pack build ./wasm --target bundler --out-dir ../src/wasm/pkg --release"
+    "wasm": "wasm-pack build ./wasm --target bundler --out-dir ../src/wasm/pkg --dev",
+    "wasm-release": "wasm-pack build ./wasm --target bundler --out-dir ../src/wasm/pkg --release"
   },
   "eslintConfig": {
     "extends": [

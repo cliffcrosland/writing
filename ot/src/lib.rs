@@ -245,8 +245,7 @@ pub fn transform(
         r += 1;
     }
 
-    let (transformed_local_len_before, _) =
-        get_input_output_doc_lengths(&transformed)?;
+    let (transformed_local_len_before, _) = get_input_output_doc_lengths(&transformed)?;
     if transformed_local_len_before != remote_len_after {
         return Err(OtError::PostConditionFailed(format!(
             "The transformed local change set must be based on a document of length {}. Is based \
@@ -463,8 +462,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
         b += 1;
     }
 
-    let (composed_input_len, composed_output_len) =
-        get_input_output_doc_lengths(&composed)?;
+    let (composed_input_len, composed_output_len) = get_input_output_doc_lengths(&composed)?;
     if composed_input_len != a_input_len || composed_output_len != b_output_len {
         return Err(OtError::PostConditionFailed(format!(
             "The composed change set must have input_len {} and output_len {}. It had input_len {} \
@@ -527,12 +525,16 @@ pub fn apply_slice(document_u16: &[u16], change_set: &ChangeSet) -> Result<Vec<u
             }
             Op::Delete(delete) => {
                 for _ in 0..delete.count {
-                    document_u16_iter.next().ok_or_else(unexpected_missing_char)?;
+                    document_u16_iter
+                        .next()
+                        .ok_or_else(unexpected_missing_char)?;
                 }
             }
             Op::Retain(retain) => {
                 for _ in 0..retain.count {
-                    let ch = document_u16_iter.next().ok_or_else(unexpected_missing_char)?;
+                    let ch = document_u16_iter
+                        .next()
+                        .ok_or_else(unexpected_missing_char)?;
                     new_document_u16.push(*ch);
                     new_doc_len += 1;
                 }
@@ -582,10 +584,7 @@ pub fn invert_slice(document_u16: &[u16], change_set: &ChangeSet) -> Result<Chan
             Op::Delete(delete) => {
                 let delete_count = delete.count as usize;
                 let content = &document_u16[index..(index + delete_count)];
-                let content: Vec<u32> = content
-                    .iter()
-                    .map(|ch| *ch as u32)
-                    .collect();
+                let content: Vec<u32> = content.iter().map(|ch| *ch as u32).collect();
                 inverted_change_set.insert_vec(content);
                 index += delete_count;
             }
@@ -730,7 +729,9 @@ impl ChangeSet {
     /// instead of `u16` because we use Protobufs for our network transmission format, and
     /// Protobufs do not support `u16` integers.
     pub fn insert_slice(&mut self, content: &[u32]) {
-        self.push_op(Op::Insert(Insert { content: content.to_vec() }));
+        self.push_op(Op::Insert(Insert {
+            content: content.to_vec(),
+        }));
     }
 
     /// Pushes a new operation to the end of the change set. If the new operation has the same type

@@ -4,9 +4,9 @@ use js_sys::{Date, JsString};
 use wasm_bindgen::prelude::*;
 use web_sys::console;
 
-use ot::writing_proto::{ChangeSet, change_op::Op};
+use ot::writing_proto::{change_op::Op, ChangeSet};
 
-const TIME_BETWEEN_HISTORY_COMMIT: f64 = 5000.0;
+const MAX_REVISION_LIFE_TIME: f64 = 2000.0;
 
 #[wasm_bindgen]
 #[derive(Debug)]
@@ -14,8 +14,15 @@ pub struct DocumentEditorModel {
     id: JsString,
     selection: Selection,
     value: JsString,
-    history: Vec<ChangeSet>,
-    last_change_set_started_at: f64,
+    value_at_start_of_last_revision: JsString,
+    revisions: Vec<Revision>,
+    undo_log: Vec<ChangeSet>,
+}
+
+#[derive(Debug)]
+struct Revision {
+    change_set: ChangeSet,
+    created_at: f64,
 }
 
 #[wasm_bindgen]
@@ -25,8 +32,9 @@ impl DocumentEditorModel {
             id: client_id,
             selection: Default::default(),
             value: JsString::from(""),
-            history: Vec::new(),
-            last_change_set_started_at: Date::now(),
+            value_at_start_of_last_revision: JsString::from(""),
+            revisions: Vec::new(),
+            undo_log: Vec::new(),
         }
     }
 
@@ -52,14 +60,14 @@ impl DocumentEditorModel {
 
     #[wasm_bindgen(js_name = processInputEvent)]
     pub fn process_input_event(&mut self, input_event: InputEventParams) {
+        let now = Date::now();
         let mut change_set = ChangeSet::new();
         match &input_event.input_type[..] {
             "historyUndo" => {
-                // TODO(cliff): Pop last change set from history, and apply its inverse. All change
-                // sets in local memory need to be invertible. That means each deletion needs to
-                // keep information about the chars it deleted.
-                self.history.pop();
-                return;
+                console::log_1(&format!("UNDO! undo_log len: {}", self.undo_log.len()).into());
+                if let Some(undo_change_set) = self.undo_log.pop() {
+                    change_set = undo_change_set;
+                }
             }
             "historyRedo" => {
                 return;
@@ -105,7 +113,8 @@ impl DocumentEditorModel {
             }
         }
 
-        self.value = match ot::apply_vec_u16(&self.value.iter().collect(), &change_set) {
+        let value_chars: Vec<u16> = self.value.iter().collect();
+        let new_value = match ot::apply_slice(&value_chars, &change_set) {
             Ok(new_value) => JsString::from_char_code(&new_value),
             Err(e) => {
                 console::log_1(&format!("ot::apply error: {:?}", e).into());
@@ -113,39 +122,60 @@ impl DocumentEditorModel {
             }
         };
 
-        self.selection = input_event.selection;
-        if self.history.is_empty() {
-            self.history.push(change_set);
-            return;
+        let should_start_new_revision = self.revisions.is_empty()
+            || now - self.revisions.last().unwrap().created_at >= MAX_REVISION_LIFE_TIME;
+
+        if should_start_new_revision {
+            // Start a new revision.
+            self.revisions.push(Revision {
+                change_set,
+                created_at: now,
+            });
+            self.value_at_start_of_last_revision = self.value.clone();
+            self.undo_log.push(ChangeSet::new());
+        } else {
+            // Update most recent revision.
+            let last_revision = &mut self.revisions.last_mut().unwrap();
+            match ot::compose(&last_revision.change_set, &change_set) {
+                Ok(composed) => {
+                    last_revision.change_set = composed;
+                }
+                Err(e) => {
+                    console::log_1(&format!("ot::compose error: {:?}", e).into());
+                }
+            }
         }
-        let now = Date::now();
-        let elapsed = now - self.last_change_set_started_at;
-        if elapsed >= TIME_BETWEEN_HISTORY_COMMIT {
-            self.history.push(change_set);
-            self.last_change_set_started_at = now;
-            return;
-        }
-        let last_change_set = self.history.last_mut().unwrap();
-        match ot::compose(last_change_set, &change_set) {
-            Ok(composed) => {
-                *last_change_set = composed;
+
+        let value_at_start_of_last_revision_chars: Vec<u16> =
+            self.value_at_start_of_last_revision.iter().collect();
+        let last_revision_change_set = &self.revisions.last().unwrap().change_set;
+        match ot::invert_slice(
+            &value_at_start_of_last_revision_chars,
+            &last_revision_change_set,
+        ) {
+            Ok(undo_change_set) => {
+                self.undo_log.pop();
+                self.undo_log.push(undo_change_set);
             }
             Err(e) => {
-                console::log_1(&format!("ot::compose error: {:?}", e).into());
+                console::log_1(&format!("ot::invert error: {:?}", e).into());
+                return;
             }
         }
+
+        self.selection = input_event.selection;
+        self.value = new_value;
     }
 
-    #[wasm_bindgen(js_name = getHistory)]
-    pub fn get_history(&self) -> JsValue {
+    #[wasm_bindgen(js_name = getRevisions)]
+    pub fn get_revisions(&self) -> JsValue {
         let mut ret = Vec::new();
-        for change_set in &self.history {
-            ret.push(get_change_set_description(change_set));
+        for revision in &self.revisions {
+            ret.push(get_change_set_description(&revision.change_set));
         }
         JsValue::from_serde(&ret).unwrap()
     }
 }
-
 
 #[wasm_bindgen]
 #[derive(Debug)]
@@ -162,13 +192,13 @@ impl InputEventParams {
         input_type: String,
         native_event_data: JsString,
         target_value: JsString,
-        selection: Selection
+        selection: Selection,
     ) -> Self {
         Self {
             input_type,
             native_event_data,
             target_value,
-            selection
+            selection,
         }
     }
 }
@@ -233,7 +263,8 @@ fn get_change_set_description(change_set: &ChangeSet) -> String {
                 for ch in &insert.content {
                     content_u16.push(*ch as u16);
                 }
-                let content_str: String = String::from_utf16(&content_u16).unwrap_or_else(|_| "".to_string());
+                let content_str: String =
+                    String::from_utf16(&content_u16).unwrap_or_else(|_| "".to_string());
                 write!(&mut ret, "Insert(\"{}\")", &content_str).unwrap();
             }
         }
