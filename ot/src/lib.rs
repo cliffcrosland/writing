@@ -494,11 +494,11 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
 ///
 pub fn apply(document: &str, change_set: &ChangeSet) -> Result<String, OtError> {
     let document_u16: Vec<u16> = document.encode_utf16().collect();
-    apply_vec_u16(&document_u16, change_set)
+    apply_slice(&document_u16, change_set)
         .map(|new_document_u16| String::from_utf16_lossy(&new_document_u16))
 }
 
-pub fn apply_vec_u16(document_u16: &Vec<u16>, change_set: &ChangeSet) -> Result<Vec<u16>, OtError> {
+pub fn apply_slice(document_u16: &[u16], change_set: &ChangeSet) -> Result<Vec<u16>, OtError> {
     let (input_len, output_len) = get_input_output_doc_lengths(change_set)?;
     let doc_len = document_u16.len();
     if input_len as usize != doc_len {
@@ -546,7 +546,56 @@ pub fn apply_vec_u16(document_u16: &Vec<u16>, change_set: &ChangeSet) -> Result<
         )));
     }
     Ok(new_document_u16)
+}
 
+/// Inverts the given `ChangeSet`, turning `Insert` operations into `Delete` operations, and
+/// vice versa. To turn `Delete` operations into `Insert`, we need to original document whose
+/// characters were deleted.
+///
+/// Returns an error if the document's length is incompatible with the change set.
+pub fn invert(document: &str, change_set: &ChangeSet) -> Result<ChangeSet, OtError> {
+    let document_u16: Vec<u16> = document.encode_utf16().collect();
+    invert_slice(&document_u16, change_set)
+}
+
+pub fn invert_slice(document_u16: &[u16], change_set: &ChangeSet) -> Result<ChangeSet, OtError> {
+    let (input_len, _output_len) = get_input_output_doc_lengths(change_set)?;
+    let doc_len = document_u16.len();
+    if input_len as usize != doc_len {
+        return Err(OtError::InvalidInput(format!(
+            "The change set must be based on a document with length {}, but the document had length {}",
+            input_len, doc_len,
+        )));
+    }
+    let mut inverted_change_set = ChangeSet::new();
+    let mut index: usize = 0;
+    for change_op in change_set.ops.iter() {
+        let op = change_op
+            .op
+            .as_ref()
+            .ok_or_else(|| OtError::InvalidInput(String::from("Change set had an empty op")))?;
+        match op {
+            Op::Insert(insert) => {
+                inverted_change_set.delete(insert.content.len() as i64);
+                index += insert.content.len();
+            }
+            Op::Delete(delete) => {
+                let delete_count = delete.count as usize;
+                let content = &document_u16[index..(index + delete_count)];
+                let content: Vec<u32> = content
+                    .iter()
+                    .map(|ch| *ch as u32)
+                    .collect();
+                inverted_change_set.insert_vec(content);
+                index += delete_count;
+            }
+            Op::Retain(retain) => {
+                inverted_change_set.retain(retain.count);
+                index += retain.count as usize;
+            }
+        }
+    }
+    Ok(inverted_change_set)
 }
 
 /// Transforms the text selection according to the changes included in the change set.
@@ -667,7 +716,7 @@ impl ChangeSet {
     ///
     /// Each `u32` element of the `Vec` argument represents a UTF-16 character. We use `u32` here
     /// instead of `u16` because we use Protobufs for our network transmission format, and
-    /// Protobufs do not support `u16` integers.
+    /// Protobufs support `u32` integers but not `u16` integers.
     pub fn insert_vec(&mut self, content: Vec<u32>) {
         self.push_op(Op::Insert(Insert { content }));
     }
@@ -1219,6 +1268,21 @@ mod tests {
             count: 3,
         };
         assert_eq!(new_selection, expected);
+    }
+
+    #[test]
+    fn test_invert_change_set() {
+        let document = "foo bar bash baz";
+        let change_set = create_change_set(&["R:8", "D:5", "R:3"]);
+        let result = invert(document, &change_set);
+        assert!(result.is_ok());
+        let inverted_change_set = result.unwrap();
+        let expected = create_change_set(&["R:8", "I:bash ", "R:3"]);
+        assert_eq!(inverted_change_set, expected);
+
+        let incompatible_document = "foo bar";
+        let result = invert(incompatible_document, &change_set);
+        assert!(result.is_err());
     }
 
     // TODO(cliff): Write exhaustive compose tests
