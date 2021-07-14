@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import './DocumentEditor.css';
 import { importWasm } from './importWasm';
 
+const VERBOSE_LOGGING = false;
+const Z_KEY_CODE = 90;
+
 function DocumentEditor(props: any) {
   const { InputEventParams, DocumentEditorModel, Selection } = importWasm();
 
@@ -23,16 +26,35 @@ function DocumentEditor(props: any) {
     setSelection(documentEditorModel.getSelection());
   }
 
+  function onKeyDown(event: any) {
+    captureSelection(event);
+
+    const isUndoOrRedo = (event.keyCode == Z_KEY_CODE && event.ctrlKey)
+    if (!isUndoOrRedo) return;
+    const inputType = event.shiftKey ? 'historyRedo' : 'historyUndo';
+    const inputEventParams = InputEventParams.new(
+      inputType, null, null,
+      Selection.new(event.target.selectionStart, event.target.selectionEnd)
+    );
+    updateFromInputEvent(inputEventParams);
+  }
+
   function onInput(event: any) {
     event.preventDefault();
 
-    console.log("onInput");
-    console.log("event.nativeEvent.inputType", event.nativeEvent.inputType);
-    console.log("event.nativeEvent.data", event.nativeEvent.data);
-    console.log("event.target.value", event.target.value);
-    console.log("event.target.selectionStart", event.target.selectionStart);
-    console.log("event.target.selectionEnd", event.target.selectionEnd);
-    console.log();
+    if (VERBOSE_LOGGING) {
+      console.log("onInput");
+      console.log("event.nativeEvent.inputType", event.nativeEvent.inputType);
+      console.log("event.nativeEvent.data", event.nativeEvent.data);
+      console.log("event.target.value", event.target.value);
+      console.log("event.target.selectionStart", event.target.selectionStart);
+      console.log("event.target.selectionEnd", event.target.selectionEnd);
+      console.log();
+    }
+    const inputType = event.nativeEvent.inputType;
+    if (inputType === 'historyUndo' || inputType === 'historyRedo') {
+      return;
+    }
 
     const inputEventParams = InputEventParams.new(
       event.nativeEvent.inputType,
@@ -41,7 +63,11 @@ function DocumentEditor(props: any) {
       Selection.new(event.target.selectionStart, event.target.selectionEnd)
     );
 
-    documentEditorModel.processInputEvent(inputEventParams);
+    updateFromInputEvent(inputEventParams);
+  }
+
+  function updateFromInputEvent(inputEventParams: any) {
+    documentEditorModel.updateFromInputEvent(inputEventParams);
 
     setValue(documentEditorModel.getValue());
     setSelection(documentEditorModel.getSelection());
@@ -55,8 +81,8 @@ function DocumentEditor(props: any) {
         <textarea 
           className="DocumentEditor-text"
           onDragStart={captureSelection}
-          onKeyDown={captureSelection}
           onSelect={captureSelection}
+          onKeyDown={onKeyDown}
           onInput={onInput}
           value={value}
         ></textarea>

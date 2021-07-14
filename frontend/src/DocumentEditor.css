@@ -12,7 +12,8 @@
 
 .DocumentEditor-text {
   resize: none;
-  width: 50%;
+  width: 70%;
+  height: 200px;
 }
 
 .DocumentEditor-selection {

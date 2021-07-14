@@ -16,13 +16,26 @@ pub struct DocumentEditorModel {
     value: JsString,
     value_at_start_of_last_revision: JsString,
     revisions: Vec<Revision>,
-    undo_log: Vec<ChangeSet>,
+    undo_stack: Vec<UndoRedoItem>,
+    redo_stack: Vec<UndoRedoItem>,
 }
 
 #[derive(Debug)]
 struct Revision {
     change_set: ChangeSet,
-    created_at: f64,
+    committed_at: f64,
+    start_value: JsString,
+}
+
+#[derive(Debug, Default)]
+struct UndoRedoItem {
+    change_set: ChangeSet,
+    selection: Selection,
+}
+
+enum UndoRedoType {
+    Undo,
+    Redo,
 }
 
 #[wasm_bindgen]
@@ -34,7 +47,8 @@ impl DocumentEditorModel {
             value: JsString::from(""),
             value_at_start_of_last_revision: JsString::from(""),
             revisions: Vec::new(),
-            undo_log: Vec::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
@@ -58,113 +72,59 @@ impl DocumentEditorModel {
         self.value.clone()
     }
 
-    #[wasm_bindgen(js_name = processInputEvent)]
-    pub fn process_input_event(&mut self, input_event: InputEventParams) {
-        let now = Date::now();
-        let mut change_set = ChangeSet::new();
-        match &input_event.input_type[..] {
+    #[wasm_bindgen(js_name = updateFromInputEvent)]
+    pub fn update_from_input_event(&mut self, input_event: InputEventParams) {
+        let input_type = &input_event.input_type[..];
+
+        // Handle undo/redo
+        let (change_set, selection) = match input_type {
             "historyUndo" => {
-                console::log_1(&format!("UNDO! undo_log len: {}", self.undo_log.len()).into());
-                if let Some(undo_change_set) = self.undo_log.pop() {
-                    change_set = undo_change_set;
+                // Undo: Pop from undo stack, push to redo stack, append to revisions.
+                let tuple = self.process_undo_redo(UndoRedoType::Undo);
+                if tuple.is_none() {
+                    return;
                 }
+                tuple.unwrap()
             }
             "historyRedo" => {
-                return;
-            }
-            "deleteByCut" | "deleteByDrag" => {
-                change_set.retain(self.selection.start.into());
-                change_set.delete(self.selection.length().into());
-                change_set.retain((self.value.length() - self.selection.end).into());
-            }
-            "deleteContentBackward" | "deleteContentForward" => {
-                if self.selection.length() > 0 {
-                    change_set.retain(self.selection.start.into());
-                    change_set.delete(self.selection.length().into());
-                    change_set.retain(
-                        (input_event.target_value.length() - input_event.selection.end).into(),
-                    );
-                } else {
-                    change_set.retain(input_event.selection.start.into());
-                    change_set
-                        .delete((self.value.length() - input_event.target_value.length()).into());
-                    change_set.retain(
-                        (input_event.target_value.length() - input_event.selection.end).into(),
-                    );
+                // Redo: Pop from redo stack, push to undo stack, append to revisions.
+                let tuple = self.process_undo_redo(UndoRedoType::Redo);
+                if tuple.is_none() {
+                    return;
                 }
-            }
-            "insertFromDrop" => {
-                change_set.retain(
-                    (input_event.selection.start - input_event.native_event_data.length()).into(),
-                );
-                change_set.insert_vec(js_string_to_vec_u32(&input_event.native_event_data));
-                change_set
-                    .retain((input_event.target_value.length() - input_event.selection.end).into());
-            }
-            "insertText" | "insertFromPaste" => {
-                change_set.retain(self.selection.start.into());
-                change_set.delete(self.selection.length().into());
-                change_set.insert_vec(js_string_to_vec_u32(&input_event.native_event_data));
-                change_set.retain((self.value.length() - self.selection.end).into());
+                tuple.unwrap()
             }
             _ => {
-                println!("?");
-                return;
-            }
-        }
-
-        let value_chars: Vec<u16> = self.value.iter().collect();
-        let new_value = match ot::apply_slice(&value_chars, &change_set) {
-            Ok(new_value) => JsString::from_char_code(&new_value),
-            Err(e) => {
-                console::log_1(&format!("ot::apply error: {:?}", e).into());
-                "".into()
+                // For all other changes:
+                //
+                // - Clear redo stack.
+                // - If the last revision hasn't been committed yet, update it.
+                // - Otherwise, start a new revision.
+                self.redo_stack.clear();
+                let change_set =
+                    compute_change_set_from_input_event(&self.selection, &self.value, &input_event);
+                let now = Date::now();
+                if !self.revisions.is_empty() && now < self.revisions.last().unwrap().committed_at {
+                    let last_revision = &mut self.revisions.last_mut().unwrap();
+                    last_revision.change_set =
+                        ot::compose(&last_revision.change_set, &change_set).unwrap();
+                } else {
+                    self.revisions.push(Revision {
+                        change_set: change_set.clone(),
+                        committed_at: now + MAX_REVISION_LIFE_TIME,
+                        start_value: self.value.clone(),
+                    });
+                    self.undo_stack.push(Default::default());
+                }
+                let last_revision = &self.revisions.last().unwrap();
+                let undo_item = &mut self.undo_stack.last_mut().unwrap();
+                undo_item.change_set =
+                    invert(&last_revision.start_value, &last_revision.change_set);
+                (change_set, input_event.selection)
             }
         };
-
-        let should_start_new_revision = self.revisions.is_empty()
-            || now - self.revisions.last().unwrap().created_at >= MAX_REVISION_LIFE_TIME;
-
-        if should_start_new_revision {
-            // Start a new revision.
-            self.revisions.push(Revision {
-                change_set,
-                created_at: now,
-            });
-            self.value_at_start_of_last_revision = self.value.clone();
-            self.undo_log.push(ChangeSet::new());
-        } else {
-            // Update most recent revision.
-            let last_revision = &mut self.revisions.last_mut().unwrap();
-            match ot::compose(&last_revision.change_set, &change_set) {
-                Ok(composed) => {
-                    last_revision.change_set = composed;
-                }
-                Err(e) => {
-                    console::log_1(&format!("ot::compose error: {:?}", e).into());
-                }
-            }
-        }
-
-        let value_at_start_of_last_revision_chars: Vec<u16> =
-            self.value_at_start_of_last_revision.iter().collect();
-        let last_revision_change_set = &self.revisions.last().unwrap().change_set;
-        match ot::invert_slice(
-            &value_at_start_of_last_revision_chars,
-            &last_revision_change_set,
-        ) {
-            Ok(undo_change_set) => {
-                self.undo_log.pop();
-                self.undo_log.push(undo_change_set);
-            }
-            Err(e) => {
-                console::log_1(&format!("ot::invert error: {:?}", e).into());
-                return;
-            }
-        }
-
-        self.selection = input_event.selection;
-        self.value = new_value;
+        self.value = apply(&self.value, &change_set);
+        self.selection = selection;
     }
 
     #[wasm_bindgen(js_name = getRevisions)]
@@ -174,6 +134,31 @@ impl DocumentEditorModel {
             ret.push(get_change_set_description(&revision.change_set));
         }
         JsValue::from_serde(&ret).unwrap()
+    }
+
+    fn process_undo_redo(
+        &mut self,
+        undo_redo_type: UndoRedoType,
+    ) -> Option<(ChangeSet, Selection)> {
+        let (from_stack, to_stack) = match undo_redo_type {
+            UndoRedoType::Undo => (&mut self.undo_stack, &mut self.redo_stack),
+            UndoRedoType::Redo => (&mut self.redo_stack, &mut self.undo_stack),
+        };
+        if from_stack.is_empty() {
+            return None;
+        }
+        let item = from_stack.pop().unwrap();
+        let inverted_change_set = invert(&self.value, &item.change_set);
+        to_stack.push(UndoRedoItem {
+            change_set: inverted_change_set,
+            selection: item.selection,
+        });
+        self.revisions.push(Revision {
+            change_set: item.change_set.clone(),
+            committed_at: Date::now(),
+            start_value: self.value.clone(),
+        });
+        Some((item.change_set, item.selection))
     }
 }
 
@@ -221,11 +206,11 @@ impl Selection {
     }
 
     pub fn clone_selection(&self) -> Self {
-        self.clone()
+        *self
     }
 
     #[wasm_bindgen(js_name = toString)]
-    pub fn to_string(&self) -> String {
+    pub fn string(&self) -> String {
         format!("{:?}", self)
     }
 }
@@ -270,4 +255,66 @@ fn get_change_set_description(change_set: &ChangeSet) -> String {
         }
     }
     ret
+}
+
+fn compute_change_set_from_input_event(
+    prior_selection: &Selection,
+    prior_value: &JsString,
+    input_event: &InputEventParams,
+) -> ChangeSet {
+    let mut change_set = ChangeSet::new();
+    let input_type = &input_event.input_type[..];
+    match input_type {
+        "deleteByCut" | "deleteByDrag" => {
+            change_set.retain(prior_selection.start.into());
+            change_set.delete(prior_selection.length().into());
+            change_set.retain((prior_value.length() - prior_selection.end).into());
+        }
+        "deleteContentBackward" | "deleteContentForward" => {
+            if prior_selection.length() > 0 {
+                change_set.retain(prior_selection.start.into());
+                change_set.delete(prior_selection.length().into());
+            } else {
+                change_set.retain(input_event.selection.start.into());
+                change_set
+                    .delete((prior_value.length() - input_event.target_value.length()).into());
+            }
+            change_set
+                .retain((input_event.target_value.length() - input_event.selection.end).into());
+        }
+        "insertFromDrop" => {
+            change_set.retain(
+                (input_event.selection.start - input_event.native_event_data.length()).into(),
+            );
+            change_set.insert_vec(js_string_to_vec_u32(&input_event.native_event_data));
+            change_set
+                .retain((input_event.target_value.length() - input_event.selection.end).into());
+        }
+        "insertText" | "insertFromPaste" => {
+            change_set.retain(prior_selection.start.into());
+            change_set.delete(prior_selection.length().into());
+            change_set.insert_vec(js_string_to_vec_u32(&input_event.native_event_data));
+            change_set.retain((prior_value.length() - prior_selection.end).into());
+        }
+        _ => {
+            console::warn_1(&format!("Unknown input type: {}", input_type).into());
+        }
+    }
+    change_set
+}
+
+fn invert(prior_value: &JsString, change_set: &ChangeSet) -> ChangeSet {
+    let prior_value_chars: Vec<u16> = prior_value.iter().collect();
+    ot::invert_slice(&prior_value_chars, change_set).unwrap()
+}
+
+fn apply(prior_value: &JsString, change_set: &ChangeSet) -> JsString {
+    let value_chars: Vec<u16> = prior_value.iter().collect();
+    match ot::apply_slice(&value_chars, &change_set) {
+        Ok(new_value) => JsString::from_char_code(&new_value),
+        Err(e) => {
+            console::error_1(&format!("ot::apply error: {:?}", e).into());
+            "".into()
+        }
+    }
 }
