@@ -6,7 +6,12 @@ use web_sys::console;
 
 use ot::writing_proto::{change_op::Op, ChangeSet};
 
-const MAX_REVISION_LIFE_TIME: f64 = 2000.0;
+// When a user is typing, their keystrokes will edit the most recent revision. Once the revision is
+// a few seconds old, it will be committed to the revision log, and a corresponding undo item will
+// be pushed to the undo stack.
+//
+// Reason: If the user is typing a lot, we don't want each keystroke to create a new revision.
+const MAX_REVISION_EDITABLE_TIME: f64 = 2000.0;
 
 #[wasm_bindgen]
 #[derive(Debug)]
@@ -23,7 +28,7 @@ pub struct DocumentEditorModel {
 #[derive(Debug)]
 struct Revision {
     change_set: ChangeSet,
-    committed_at: f64,
+    editable_until: f64,
     start_value: JsString,
 }
 
@@ -80,7 +85,7 @@ impl DocumentEditorModel {
         let (change_set, selection) = match input_type {
             "historyUndo" => {
                 // Undo: Pop from undo stack, push to redo stack, append to revisions.
-                let tuple = self.process_undo_redo(UndoRedoType::Undo);
+                let tuple = self.process_undo_redo_command(UndoRedoType::Undo);
                 if tuple.is_none() {
                     return;
                 }
@@ -88,39 +93,18 @@ impl DocumentEditorModel {
             }
             "historyRedo" => {
                 // Redo: Pop from redo stack, push to undo stack, append to revisions.
-                let tuple = self.process_undo_redo(UndoRedoType::Redo);
+                let tuple = self.process_undo_redo_command(UndoRedoType::Redo);
                 if tuple.is_none() {
                     return;
                 }
                 tuple.unwrap()
             }
             _ => {
-                // For all other changes:
-                //
+                // For all other edits:
                 // - Clear redo stack.
-                // - If the last revision hasn't been committed yet, update it.
-                // - Otherwise, start a new revision.
+                // - Process the edit, updating the revisions log and undo stack.
                 self.redo_stack.clear();
-                let change_set =
-                    compute_change_set_from_input_event(&self.selection, &self.value, &input_event);
-                let now = Date::now();
-                if !self.revisions.is_empty() && now < self.revisions.last().unwrap().committed_at {
-                    let last_revision = &mut self.revisions.last_mut().unwrap();
-                    last_revision.change_set =
-                        ot::compose(&last_revision.change_set, &change_set).unwrap();
-                } else {
-                    self.revisions.push(Revision {
-                        change_set: change_set.clone(),
-                        committed_at: now + MAX_REVISION_LIFE_TIME,
-                        start_value: self.value.clone(),
-                    });
-                    self.undo_stack.push(Default::default());
-                }
-                let last_revision = &self.revisions.last().unwrap();
-                let undo_item = &mut self.undo_stack.last_mut().unwrap();
-                undo_item.change_set =
-                    invert(&last_revision.start_value, &last_revision.change_set);
-                (change_set, input_event.selection)
+                self.process_edit_command(&input_event)
             }
         };
         self.value = apply(&self.value, &change_set);
@@ -136,7 +120,7 @@ impl DocumentEditorModel {
         JsValue::from_serde(&ret).unwrap()
     }
 
-    fn process_undo_redo(
+    fn process_undo_redo_command(
         &mut self,
         undo_redo_type: UndoRedoType,
     ) -> Option<(ChangeSet, Selection)> {
@@ -155,10 +139,38 @@ impl DocumentEditorModel {
         });
         self.revisions.push(Revision {
             change_set: item.change_set.clone(),
-            committed_at: Date::now(),
+            editable_until: 0.0,
             start_value: self.value.clone(),
         });
         Some((item.change_set, item.selection))
+    }
+
+    fn process_edit_command(&mut self, input_event: &InputEventParams) -> (ChangeSet, Selection) {
+        let (change_set, should_start_new_revision) =
+            compute_change_set_from_input_event(&self.selection, &self.value, input_event);
+        let editable_until = if should_start_new_revision {
+            0.0
+        } else {
+            Date::now() + MAX_REVISION_EDITABLE_TIME
+        };
+        if should_start_new_revision || !is_revision_editable(self.revisions.last()) {
+            self.revisions.push(Revision {
+                change_set: change_set.clone(),
+                editable_until,
+                start_value: self.value.clone(),
+            });
+            self.undo_stack.push(UndoRedoItem {
+                change_set: ChangeSet::new(),
+                selection: self.selection,
+            });
+        } else {
+            let last_revision = &mut self.revisions.last_mut().unwrap();
+            last_revision.change_set = ot::compose(&last_revision.change_set, &change_set).unwrap();
+        }
+        let last_revision = &self.revisions.last().unwrap();
+        let undo_item = &mut self.undo_stack.last_mut().unwrap();
+        undo_item.change_set = invert(&last_revision.start_value, &last_revision.change_set);
+        (change_set, input_event.selection)
     }
 }
 
@@ -257,15 +269,19 @@ fn get_change_set_description(change_set: &ChangeSet) -> String {
     ret
 }
 
+type ShouldStartNewRevision = bool;
+
 fn compute_change_set_from_input_event(
     prior_selection: &Selection,
     prior_value: &JsString,
     input_event: &InputEventParams,
-) -> ChangeSet {
+) -> (ChangeSet, ShouldStartNewRevision) {
     let mut change_set = ChangeSet::new();
     let input_type = &input_event.input_type[..];
+    let mut should_start_new_revision = prior_selection.length() > 0;
     match input_type {
         "deleteByCut" | "deleteByDrag" => {
+            should_start_new_revision = true;
             change_set.retain(prior_selection.start.into());
             change_set.delete(prior_selection.length().into());
             change_set.retain((prior_value.length() - prior_selection.end).into());
@@ -283,6 +299,7 @@ fn compute_change_set_from_input_event(
                 .retain((input_event.target_value.length() - input_event.selection.end).into());
         }
         "insertFromDrop" => {
+            should_start_new_revision = true;
             change_set.retain(
                 (input_event.selection.start - input_event.native_event_data.length()).into(),
             );
@@ -291,6 +308,7 @@ fn compute_change_set_from_input_event(
                 .retain((input_event.target_value.length() - input_event.selection.end).into());
         }
         "insertText" | "insertFromPaste" => {
+            should_start_new_revision = input_type == "insertFromPaste";
             change_set.retain(prior_selection.start.into());
             change_set.delete(prior_selection.length().into());
             change_set.insert_vec(js_string_to_vec_u32(&input_event.native_event_data));
@@ -300,12 +318,26 @@ fn compute_change_set_from_input_event(
             console::warn_1(&format!("Unknown input type: {}", input_type).into());
         }
     }
-    change_set
+    (change_set, should_start_new_revision)
+}
+
+fn is_revision_editable(revision: Option<&Revision>) -> bool {
+    match revision {
+        None => false,
+        Some(revision) => Date::now() < revision.editable_until,
+    }
 }
 
 fn invert(prior_value: &JsString, change_set: &ChangeSet) -> ChangeSet {
     let prior_value_chars: Vec<u16> = prior_value.iter().collect();
-    ot::invert_slice(&prior_value_chars, change_set).unwrap()
+    match ot::invert_slice(&prior_value_chars, change_set) {
+        Ok(inverted) => inverted,
+        Err(e) => {
+            let error_message = format!("ot::invert error: {:?}", e);
+            console::error_1(&error_message.clone().into());
+            panic!("{}", error_message);
+        }
+    }
 }
 
 fn apply(prior_value: &JsString, change_set: &ChangeSet) -> JsString {
@@ -313,8 +345,9 @@ fn apply(prior_value: &JsString, change_set: &ChangeSet) -> JsString {
     match ot::apply_slice(&value_chars, &change_set) {
         Ok(new_value) => JsString::from_char_code(&new_value),
         Err(e) => {
-            console::error_1(&format!("ot::apply error: {:?}", e).into());
-            "".into()
+            let error_message = format!("ot::apply error: {:?}", e);
+            console::error_1(&error_message.clone().into());
+            panic!("{}", error_message);
         }
     }
 }

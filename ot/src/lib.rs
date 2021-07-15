@@ -579,7 +579,6 @@ pub fn invert_slice(document_u16: &[u16], change_set: &ChangeSet) -> Result<Chan
         match op {
             Op::Insert(insert) => {
                 inverted_change_set.delete(insert.content.len() as i64);
-                index += insert.content.len();
             }
             Op::Delete(delete) => {
                 let delete_count = delete.count as usize;
