@@ -165,7 +165,14 @@ impl DocumentEditorModel {
             });
         } else {
             let last_revision = &mut self.revisions.last_mut().unwrap();
-            last_revision.change_set = ot::compose(&last_revision.change_set, &change_set).unwrap();
+            last_revision.change_set = match ot::compose(&last_revision.change_set, &change_set) {
+                Ok(composed) => composed,
+                Err(e) => {
+                    let error_message = format!("ot::invert error: {:?}", e);
+                    console::error_1(&error_message.clone().into());
+                    panic!("{}", error_message);
+                }
+            };
         }
         let last_revision = &self.revisions.last().unwrap();
         let undo_item = &mut self.undo_stack.last_mut().unwrap();
@@ -258,7 +265,13 @@ fn get_change_set_description(change_set: &ChangeSet) -> String {
             Op::Insert(insert) => {
                 let mut content_u16: Vec<u16> = Vec::new();
                 for ch in &insert.content {
-                    content_u16.push(*ch as u16);
+                    let ch = *ch as u16;
+                    if ch == '\n' as u16 {
+                        content_u16.push('\\' as u16);
+                        content_u16.push('n' as u16);
+                    } else {
+                        content_u16.push(ch);
+                    }
                 }
                 let content_str: String =
                     String::from_utf16(&content_u16).unwrap_or_else(|_| "".to_string());
@@ -314,8 +327,16 @@ fn compute_change_set_from_input_event(
             change_set.insert_vec(js_string_to_vec_u32(&input_event.native_event_data));
             change_set.retain((prior_value.length() - prior_selection.end).into());
         }
+        "insertLineBreak" => {
+            should_start_new_revision = true;
+            change_set.retain(prior_selection.start.into());
+            change_set.insert("\n");
+            change_set.retain((prior_value.length() - prior_selection.end).into());
+        }
         _ => {
-            console::warn_1(&format!("Unknown input type: {}", input_type).into());
+            let error_message = format!("Unknown input type: {}", input_type);
+            console::error_1(&error_message.clone().into());
+            panic!("{}", error_message);
         }
     }
     (change_set, should_start_new_revision)
