@@ -135,7 +135,7 @@ impl DocumentEditorModel {
         let inverted_change_set = invert(&self.value, &item.change_set);
         to_stack.push(UndoRedoItem {
             change_set: inverted_change_set,
-            selection: item.selection,
+            selection: self.selection,
         });
         self.revisions.push(Revision {
             change_set: item.change_set.clone(),
@@ -210,8 +210,8 @@ impl InputEventParams {
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Selection {
-    start: u32,
-    end: u32,
+    pub start: u32,
+    pub end: u32,
 }
 
 #[wasm_bindgen]
@@ -275,7 +275,11 @@ fn get_change_set_description(change_set: &ChangeSet) -> String {
                 }
                 let content_str: String =
                     String::from_utf16(&content_u16).unwrap_or_else(|_| "".to_string());
-                write!(&mut ret, "Insert(\"{}\")", &content_str).unwrap();
+                if content_str == "\\n" {
+                    write!(&mut ret, "Insert('\\n')").unwrap();
+                } else {
+                    write!(&mut ret, "Insert(\"{}\")", &content_str).unwrap();
+                }
             }
         }
     }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import './DocumentEditor.css';
 import { importWasm } from './importWasm';
 
@@ -10,12 +10,12 @@ function DocumentEditor(props: any) {
 
   const clientId: string = props.clientId;
 
-  const [value, setValue] = useState('');
+  const textAreaElem: any = useRef(null);
   const [documentEditorModel, _] = useState(() => {
     return DocumentEditorModel.new(clientId);
   });
-  const [selection, setSelection] = useState(Selection.new(0, 0));
-  const [revisions, setRevisions] = useState(new Array<string>());
+  const [debugSelection, setDebugSelection] = useState(Selection.new(0, 0));
+  const [debugRevisions, setDebugRevisions] = useState(new Array<string>());
   
   function captureSelection(event: any) {
     const newSelection = Selection.new(
@@ -23,7 +23,7 @@ function DocumentEditor(props: any) {
       event.target.selectionEnd
     );
     documentEditorModel.setSelection(newSelection.clone_selection());
-    setSelection(documentEditorModel.getSelection());
+    setDebugSelection(documentEditorModel.getSelection());
   }
 
   function onKeyDown(event: any) {
@@ -69,9 +69,12 @@ function DocumentEditor(props: any) {
   function updateFromInputEvent(inputEventParams: any) {
     documentEditorModel.updateFromInputEvent(inputEventParams);
 
-    setValue(documentEditorModel.getValue());
-    setSelection(documentEditorModel.getSelection());
-    setRevisions(documentEditorModel.getRevisions());
+    textAreaElem.current.value = documentEditorModel.getValue();
+    const selection = documentEditorModel.getSelection();
+    textAreaElem.current.selectionStart = selection.start;
+    textAreaElem.current.selectionEnd = selection.end;
+    setDebugSelection(selection);
+    setDebugRevisions(documentEditorModel.getRevisions());
   }
 
   return (
@@ -79,19 +82,19 @@ function DocumentEditor(props: any) {
       <div className="DocumentEditor-controls">
         <h2>Client ID: {clientId}</h2>
         <textarea 
+          ref={textAreaElem}
           className="DocumentEditor-text"
           onDragStart={captureSelection}
           onSelect={captureSelection}
           onKeyDown={onKeyDown}
           onInput={onInput}
-          value={value}
         ></textarea>
         <div className="DocumentEditor-selection">
-          { selection.toString() }
+          { debugSelection.toString() }
         </div>
         <div className="DocumentEditor-revisions">
           <ul className="DocumentEditor-revisionsList">
-            {revisions.map((revision, i) =>
+            {debugRevisions.map((revision, i) =>
               <li key={i}>{revision}</li>
             ).reverse()}
           </ul>
