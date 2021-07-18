@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fmt::Write;
 
 use js_sys::{Date, JsString};
@@ -20,13 +21,13 @@ pub struct DocumentEditorModel {
     selection: Selection,
     value: JsString,
     value_before_last_revision: JsString,
-    revisions: Vec<Revision>,
+    local_revisions: VecDeque<LocalDocumentRevision>,
     undo_stack: Vec<UndoRedoItem>,
     redo_stack: Vec<UndoRedoItem>,
 }
 
 #[derive(Debug)]
-struct Revision {
+struct LocalDocumentRevision {
     change_set: ChangeSet,
     editable_until: f64,
 }
@@ -50,7 +51,7 @@ impl DocumentEditorModel {
             selection: Default::default(),
             value: JsString::from(""),
             value_before_last_revision: JsString::from(""),
-            revisions: Vec::new(),
+            local_revisions: VecDeque::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
@@ -82,17 +83,15 @@ impl DocumentEditorModel {
 
         // Handle undo/redo
         let (change_set, selection) = match input_type {
-            "historyUndo" => {
-                // Undo: Pop from undo stack, push to redo stack, append to revisions.
-                let tuple = self.process_undo_redo_command(UndoRedoType::Undo);
-                if tuple.is_none() {
-                    return;
-                }
-                tuple.unwrap()
-            }
-            "historyRedo" => {
-                // Redo: Pop from redo stack, push to undo stack, append to revisions.
-                let tuple = self.process_undo_redo_command(UndoRedoType::Redo);
+            "historyUndo" | "historyRedo" => {
+                let command = if input_type == "historyUndo" {
+                    // Undo: Pop from undo stack, push to redo stack. Update revisions log.
+                    UndoRedoType::Undo
+                } else {
+                    // Redo: Pop from redo stack, push to undo stack. Update revisions log.
+                    UndoRedoType::Redo
+                };
+                let tuple = self.process_undo_redo_command(command);
                 if tuple.is_none() {
                     return;
                 }
@@ -110,11 +109,11 @@ impl DocumentEditorModel {
         self.selection = selection;
     }
 
-    #[wasm_bindgen(js_name = getRevisions)]
-    pub fn get_revisions(&self) -> JsValue {
+    #[wasm_bindgen(js_name = getDebugRevisions)]
+    pub fn get_debug_revisions(&self) -> JsValue {
         let mut ret = Vec::new();
-        for revision in &self.revisions {
-            ret.push(get_change_set_description(&revision.change_set));
+        for revision in &self.local_revisions {
+            ret.push(change_set_to_debug_description(&revision.change_set));
         }
         JsValue::from_serde(&ret).unwrap()
     }
@@ -148,14 +147,14 @@ impl DocumentEditorModel {
         } else {
             Date::now() + MAX_REVISION_EDITABLE_TIME
         };
-        if should_start_new_revision || !is_revision_editable(self.revisions.last()) {
+        if should_start_new_revision || !is_revision_editable(self.local_revisions.back()) {
             self.push_revision(change_set.clone(), editable_until);
             self.undo_stack.push(UndoRedoItem {
                 change_set: ChangeSet::new(),
                 selection: self.selection,
             });
         } else {
-            let last_revision = &mut self.revisions.last_mut().unwrap();
+            let last_revision = &mut self.local_revisions.back_mut().unwrap();
             last_revision.change_set = match ot::compose(&last_revision.change_set, &change_set) {
                 Ok(composed) => composed,
                 Err(e) => {
@@ -165,7 +164,7 @@ impl DocumentEditorModel {
                 }
             };
         }
-        let last_revision = &self.revisions.last().unwrap();
+        let last_revision = &self.local_revisions.back().unwrap();
         let undo_item = &mut self.undo_stack.last_mut().unwrap();
         undo_item.change_set = invert(&self.value_before_last_revision, &last_revision.change_set);
         (change_set, input_event.selection)
@@ -173,7 +172,7 @@ impl DocumentEditorModel {
 
     fn push_revision(&mut self, change_set: ChangeSet, editable_until: f64) {
         self.value_before_last_revision = self.value.clone();
-        self.revisions.push(Revision {
+        self.local_revisions.push_back(LocalDocumentRevision {
             change_set,
             editable_until,
         });
@@ -241,7 +240,7 @@ fn js_string_to_vec_u32(js_string: &JsString) -> Vec<u32> {
     ret
 }
 
-fn get_change_set_description(change_set: &ChangeSet) -> String {
+fn change_set_to_debug_description(change_set: &ChangeSet) -> String {
     let mut ret = String::new();
     let mut is_first = true;
     for change_op in &change_set.ops {
@@ -345,7 +344,7 @@ fn compute_change_set_from_input_event(
     (change_set, should_start_new_revision)
 }
 
-fn is_revision_editable(revision: Option<&Revision>) -> bool {
+fn is_revision_editable(revision: Option<&LocalDocumentRevision>) -> bool {
     match revision {
         None => false,
         Some(revision) => Date::now() < revision.editable_until,

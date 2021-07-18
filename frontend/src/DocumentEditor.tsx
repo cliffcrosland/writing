@@ -74,7 +74,7 @@ function DocumentEditor(props: any) {
     textAreaElem.current.selectionStart = selection.start;
     textAreaElem.current.selectionEnd = selection.end;
     setDebugSelection(selection);
-    setDebugRevisions(documentEditorModel.getRevisions());
+    setDebugRevisions(documentEditorModel.getDebugRevisions());
   }
 
   return (
