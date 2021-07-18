@@ -19,7 +19,7 @@ pub struct DocumentEditorModel {
     id: JsString,
     selection: Selection,
     value: JsString,
-    value_at_start_of_last_revision: JsString,
+    value_before_last_revision: JsString,
     revisions: Vec<Revision>,
     undo_stack: Vec<UndoRedoItem>,
     redo_stack: Vec<UndoRedoItem>,
@@ -29,7 +29,6 @@ pub struct DocumentEditorModel {
 struct Revision {
     change_set: ChangeSet,
     editable_until: f64,
-    start_value: JsString,
 }
 
 #[derive(Debug, Default)]
@@ -50,7 +49,7 @@ impl DocumentEditorModel {
             id: client_id,
             selection: Default::default(),
             value: JsString::from(""),
-            value_at_start_of_last_revision: JsString::from(""),
+            value_before_last_revision: JsString::from(""),
             revisions: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -137,11 +136,7 @@ impl DocumentEditorModel {
             change_set: inverted_change_set,
             selection: self.selection,
         });
-        self.revisions.push(Revision {
-            change_set: item.change_set.clone(),
-            editable_until: 0.0,
-            start_value: self.value.clone(),
-        });
+        self.push_revision(item.change_set.clone(), 0.0);
         Some((item.change_set, item.selection))
     }
 
@@ -154,11 +149,7 @@ impl DocumentEditorModel {
             Date::now() + MAX_REVISION_EDITABLE_TIME
         };
         if should_start_new_revision || !is_revision_editable(self.revisions.last()) {
-            self.revisions.push(Revision {
-                change_set: change_set.clone(),
-                editable_until,
-                start_value: self.value.clone(),
-            });
+            self.push_revision(change_set.clone(), editable_until);
             self.undo_stack.push(UndoRedoItem {
                 change_set: ChangeSet::new(),
                 selection: self.selection,
@@ -176,8 +167,16 @@ impl DocumentEditorModel {
         }
         let last_revision = &self.revisions.last().unwrap();
         let undo_item = &mut self.undo_stack.last_mut().unwrap();
-        undo_item.change_set = invert(&last_revision.start_value, &last_revision.change_set);
+        undo_item.change_set = invert(&self.value_before_last_revision, &last_revision.change_set);
         (change_set, input_event.selection)
+    }
+
+    fn push_revision(&mut self, change_set: ChangeSet, editable_until: f64) {
+        self.value_before_last_revision = self.value.clone();
+        self.revisions.push(Revision {
+            change_set,
+            editable_until,
+        });
     }
 }
 
