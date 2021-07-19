@@ -4,12 +4,13 @@ pub mod documents {
     use actix_web::{error, post, web, HttpResponse};
     use prost::Message;
 
-    use crate::documents;
-    use crate::http;
-    use crate::proto::writing::{
+    use ot::writing_proto::{
         CreateDocumentRequest, GetDocumentRevisionsRequest, SubmitDocumentChangeSetRequest,
         UpdateDocumentTitleRequest,
     };
+
+    use crate::documents;
+    use crate::http;
     use crate::BackendService;
 
     #[post("/api/documents.create_document")]

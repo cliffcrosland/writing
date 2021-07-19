@@ -11,8 +11,8 @@ use rusoto_dynamodb::{DynamoDb, GetItemInput};
 
 use crate::dynamodb::{av_get_n, av_map, av_s, table_name};
 use crate::ids::Id;
-use crate::proto::encode_protobuf_message;
 use crate::users::UserRole;
+use crate::utils::proto;
 use crate::BackendService;
 
 #[derive(Debug)]
@@ -84,7 +84,7 @@ where
     M: prost::Message,
 {
     let encoded =
-        encode_protobuf_message(message).map_err(|_| error::ErrorInternalServerError(""))?;
+        proto::encode_protobuf_message(message).map_err(|_| error::ErrorInternalServerError(""))?;
 
     Ok(HttpResponse::Ok()
         .content_type("application/protobuf")

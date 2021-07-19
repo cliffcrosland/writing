@@ -7,17 +7,17 @@ use rusoto_dynamodb::{
     UpdateItemInput,
 };
 
-use crate::dynamodb::{av_b, av_get_b, av_get_n, av_get_s, av_map, av_n, av_s, table_name};
-use crate::http::SessionUser;
-use crate::ids::{Id, IdType};
-use crate::proto;
-use crate::proto::writing::{
+use ot::writing_proto::{
     submit_document_change_set_response::ResponseCode, ChangeSet, CreateDocumentRequest,
     CreateDocumentResponse, DocumentRevision, DocumentSharingPermission,
     GetDocumentRevisionsRequest, GetDocumentRevisionsResponse, SubmitDocumentChangeSetRequest,
     SubmitDocumentChangeSetResponse, UpdateDocumentTitleRequest, UpdateDocumentTitleResponse,
 };
-use crate::utils::time;
+
+use crate::dynamodb::{av_b, av_get_b, av_get_n, av_get_s, av_map, av_n, av_s, table_name};
+use crate::http::SessionUser;
+use crate::ids::{Id, IdType};
+use crate::utils::{proto, time};
 
 /// Create a new document with the given title in a given org.
 ///
@@ -482,7 +482,8 @@ mod tests {
 
     use rusoto_dynamodb::AttributeValue;
 
-    use crate::proto::writing::{change_op, ChangeOp, ChangeSet, Delete, Insert, Retain};
+    use ot::writing_proto::ChangeSet;
+
     use crate::testing::utils::TestDynamoDb;
     use crate::users::UserRole;
 
@@ -493,23 +494,11 @@ mod tests {
         let db = TestDynamoDb::new().await;
 
         // Create 2 different change sets.
-        let change_set1 = ChangeSet {
-            ops: vec![ChangeOp {
-                change_op: Some(change_op::ChangeOp::Insert(Insert {
-                    content: String::from("foo bar"),
-                })),
-            }],
-        };
-        let change_set2 = ChangeSet {
-            ops: vec![
-                ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Retain(Retain { count: 3 })),
-                },
-                ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Delete(Delete { count: 4 })),
-                },
-            ],
-        };
+        let mut change_set1 = ChangeSet::new();
+        change_set1.insert("foo_bar");
+        let mut change_set2 = ChangeSet::new();
+        change_set2.retain(3);
+        change_set2.delete(4);
         let change_set_bytes1 = Bytes::from(proto::encode_protobuf_message(&change_set1)?);
         let change_set_bytes2 = Bytes::from(proto::encode_protobuf_message(&change_set2)?);
 
@@ -647,23 +636,11 @@ mod tests {
 
         // Add a change set to the revision log. Prepare a new change set to be submitted by the
         // user.
-        let existing_change_set = ChangeSet {
-            ops: vec![ChangeOp {
-                change_op: Some(change_op::ChangeOp::Insert(Insert {
-                    content: String::from("foo bar"),
-                })),
-            }],
-        };
-        let new_change_set = ChangeSet {
-            ops: vec![
-                ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Retain(Retain { count: 3 })),
-                },
-                ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Delete(Delete { count: 4 })),
-                },
-            ],
-        };
+        let mut existing_change_set = ChangeSet::new();
+        existing_change_set.insert("foo bar");
+        let mut new_change_set = ChangeSet::new();
+        new_change_set.retain(3);
+        new_change_set.delete(3);
         let existing_change_set_bytes =
             Bytes::from(proto::encode_protobuf_message(&existing_change_set)?);
 
@@ -723,28 +700,13 @@ mod tests {
     async fn test_submit_change_set_collision() -> TestResult {
         let db = TestDynamoDb::new().await;
 
-        let change_set1 = ChangeSet {
-            ops: vec![ChangeOp {
-                change_op: Some(change_op::ChangeOp::Insert(Insert {
-                    content: String::from("foo bar"),
-                })),
-            }],
-        };
-        let change_set2 = ChangeSet {
-            ops: vec![
-                ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Retain(Retain { count: 3 })),
-                },
-                ChangeOp {
-                    change_op: Some(change_op::ChangeOp::Delete(Delete { count: 4 })),
-                },
-            ],
-        };
-        let new_change_set = ChangeSet {
-            ops: vec![ChangeOp {
-                change_op: Some(change_op::ChangeOp::Delete(Delete { count: 4 })),
-            }],
-        };
+        let mut change_set1 = ChangeSet::new();
+        change_set1.insert("foo bar");
+        let mut change_set2 = ChangeSet::new();
+        change_set2.retain(3);
+        change_set2.delete(4);
+        let mut new_change_set = ChangeSet::new();
+        new_change_set.delete(4);
         let change_set_bytes1 = Bytes::from(proto::encode_protobuf_message(&change_set1)?);
         let change_set_bytes2 = Bytes::from(proto::encode_protobuf_message(&change_set2)?);
 

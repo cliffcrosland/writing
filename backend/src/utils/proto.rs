@@ -1,7 +1,3 @@
-pub mod writing {
-    tonic::include_proto!("writing");
-}
-
 pub fn encode_protobuf_message<M>(message: &M) -> Result<Vec<u8>, prost::EncodeError>
 where
     M: prost::Message,

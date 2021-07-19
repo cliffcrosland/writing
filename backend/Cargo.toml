@@ -21,6 +21,7 @@ enum-iterator = "0.6.0"
 futures = "0.3"
 lazy_static = "1.4"
 log = "0.4"
+ot = { path = "../ot" }
 prost = "0.6"
 rusoto_core = "0.46"
 rusoto_credential = "0.46"
