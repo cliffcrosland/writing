@@ -31,8 +31,6 @@ documentation and related concepts.
 
 ## Todos
 - Frontend
-  - Implement Undo/Redo
-    - Transpose, apply inverse.
-  - Experiment with OtDebugger clients
-  - Build "real" editor that integrates with server.
+  - Integrate frontend document editor with backend server.
+  - Implement transpose for undo/redo.
 - Choose a good name for this project.

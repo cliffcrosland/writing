@@ -8,11 +8,9 @@ const Z_KEY_CODE = 90;
 function DocumentEditor(props: any) {
   const { InputEventParams, DocumentEditorModel, Selection } = importWasm();
 
-  const clientId: string = props.clientId;
-
   const textAreaElem: any = useRef(null);
   const [documentEditorModel, _] = useState(() => {
-    return DocumentEditorModel.new(clientId);
+    return DocumentEditorModel.new(props.orgId, props.docId, props.userId);
   });
   const [debugSelection, setDebugSelection] = useState(Selection.new(0, 0));
   const [debugRevisions, setDebugRevisions] = useState(new Array<string>());
@@ -92,7 +90,6 @@ function DocumentEditor(props: any) {
   return (
     <div className="DocumentEditor">
       <div className="DocumentEditor-controls">
-        <h2>Client ID: {clientId}</h2>
         <textarea 
           ref={textAreaElem}
           className="DocumentEditor-text"

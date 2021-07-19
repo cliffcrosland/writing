@@ -16,15 +16,12 @@ use ot::writing_proto::{
 // Reason: If the user is typing a lot, we don't want each keystroke to create a new revision.
 const MAX_REVISION_EDITABLE_TIME: f64 = 2000.0;
 
-const TEST_DOC_ID: &str = "d-abc123";
-const TEST_ORG_ID: &str = "o-def456";
-
 #[wasm_bindgen]
 #[derive(Debug)]
 pub struct DocumentEditorModel {
-    client_id: JsString,
     doc_id: String,
     org_id: String,
+    user_id: String,
     selection: Selection,
     value: JsString,
     value_before_last_local_revision: JsString,
@@ -54,11 +51,11 @@ enum UndoRedoType {
 
 #[wasm_bindgen]
 impl DocumentEditorModel {
-    pub fn new(client_id: JsString) -> Self {
+    pub fn new(org_id: String, doc_id: String, user_id: String) -> Self {
         Self {
-            client_id: client_id,
-            doc_id: TEST_DOC_ID.to_string(),
-            org_id: TEST_ORG_ID.to_string(),
+            doc_id,
+            org_id,
+            user_id,
             selection: Default::default(),
             value: JsString::from(""),
             value_before_last_local_revision: JsString::from(""),
@@ -431,8 +428,8 @@ fn invert(prior_value: &JsString, change_set: &ChangeSet) -> ChangeSet {
 }
 
 fn apply(prior_value: &JsString, change_set: &ChangeSet) -> JsString {
-    let value_chars: Vec<u16> = prior_value.iter().collect();
-    match ot::apply_slice(&value_chars, &change_set) {
+    let prior_value_chars: Vec<u16> = prior_value.iter().collect();
+    match ot::apply_slice(&prior_value_chars, &change_set) {
         Ok(new_value) => JsString::from_char_code(&new_value),
         Err(e) => {
             let error_message = format!("ot::apply error: {:?}", e);
