@@ -5,7 +5,9 @@ use js_sys::{Date, JsString};
 use wasm_bindgen::prelude::*;
 use web_sys::console;
 
-use ot::writing_proto::{change_op::Op, ChangeSet};
+use ot::writing_proto::{
+    change_op::Op, ChangeSet, DocumentRevision, SubmitDocumentChangeSetRequest,
+};
 
 // When a user is typing, their keystrokes will edit the most recent revision. Once the revision is
 // a few seconds old, it will be committed to the revision log, and a corresponding undo item will
@@ -14,14 +16,21 @@ use ot::writing_proto::{change_op::Op, ChangeSet};
 // Reason: If the user is typing a lot, we don't want each keystroke to create a new revision.
 const MAX_REVISION_EDITABLE_TIME: f64 = 2000.0;
 
+const TEST_DOC_ID: &str = "d-abc123";
+const TEST_ORG_ID: &str = "o-def456";
+
 #[wasm_bindgen]
 #[derive(Debug)]
 pub struct DocumentEditorModel {
-    id: JsString,
+    client_id: JsString,
+    doc_id: String,
+    org_id: String,
     selection: Selection,
     value: JsString,
-    value_before_last_revision: JsString,
+    value_before_last_local_revision: JsString,
+    committed_revisions: Vec<DocumentRevision>,
     local_revisions: VecDeque<LocalDocumentRevision>,
+    submitted_revision_request: Option<SubmitDocumentChangeSetRequest>,
     undo_stack: Vec<UndoRedoItem>,
     redo_stack: Vec<UndoRedoItem>,
 }
@@ -47,19 +56,18 @@ enum UndoRedoType {
 impl DocumentEditorModel {
     pub fn new(client_id: JsString) -> Self {
         Self {
-            id: client_id,
+            client_id: client_id,
+            doc_id: TEST_DOC_ID.to_string(),
+            org_id: TEST_ORG_ID.to_string(),
             selection: Default::default(),
             value: JsString::from(""),
-            value_before_last_revision: JsString::from(""),
+            value_before_last_local_revision: JsString::from(""),
+            committed_revisions: Vec::new(),
             local_revisions: VecDeque::new(),
+            submitted_revision_request: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
-    }
-
-    #[wasm_bindgen(js_name = getId)]
-    pub fn get_id(&self) -> JsString {
-        self.id.clone()
     }
 
     #[wasm_bindgen(js_name = getSelection)]
@@ -109,13 +117,65 @@ impl DocumentEditorModel {
         self.selection = selection;
     }
 
+    #[wasm_bindgen(js_name = submitNextRevision)]
+    pub fn submit_next_revision(&mut self) {
+        let submitted_revision = match self.local_revisions.pop_front() {
+            Some(rev) => rev,
+            None => {
+                return;
+            }
+        };
+        let request = SubmitDocumentChangeSetRequest {
+            doc_id: self.doc_id.clone(),
+            org_id: self.org_id.clone(),
+            on_revision_number: self.last_committed_revision_number(),
+            change_set: Some(submitted_revision.change_set),
+        };
+        self.submitted_revision_request = Some(request);
+    }
+
+    #[wasm_bindgen(js_name = commitSubmittedRevision)]
+    pub fn commit_submitted_revision(&mut self) {
+        let mut request = match self.submitted_revision_request.take() {
+            Some(req) => req,
+            None => {
+                return;
+            }
+        };
+        let now_iso_string: String = Date::new_0().to_iso_string().into();
+        self.committed_revisions.push(DocumentRevision {
+            doc_id: request.doc_id,
+            revision_number: request.on_revision_number + 1,
+            change_set: request.change_set.take(),
+            committed_at: now_iso_string,
+        });
+    }
+
     #[wasm_bindgen(js_name = getDebugRevisions)]
     pub fn get_debug_revisions(&self) -> JsValue {
-        let mut ret = Vec::new();
-        for revision in &self.local_revisions {
-            ret.push(change_set_to_debug_description(&revision.change_set));
+        let mut ret: Vec<String> = Vec::new();
+        for document_revision in &self.committed_revisions {
+            let revision_number = document_revision.revision_number;
+            let change_set = document_revision.change_set.as_ref().unwrap();
+            let change_set_description = get_change_set_description(change_set);
+            ret.push(format!("{}: {}", revision_number, change_set_description));
+        }
+        if let Some(request) = self.submitted_revision_request.as_ref() {
+            let expected_revision_number = request.on_revision_number + 1;
+            let change_set = request.change_set.as_ref().unwrap();
+            let change_set_description = get_change_set_description(change_set);
+            ret.push(format!("Submitted {}: {}", expected_revision_number, change_set_description));
+        }
+        for local_document_revision in &self.local_revisions {
+            let change_set_description = get_change_set_description(&local_document_revision.change_set);
+            ret.push(format!("local: {}", change_set_description));
         }
         JsValue::from_serde(&ret).unwrap()
+    }
+
+    #[wasm_bindgen(js_name = hasSubmittedRevision)]
+    pub fn has_submitted_revision(&self) -> bool {
+        self.submitted_revision_request.is_some()
     }
 
     fn process_undo_redo_command(
@@ -135,7 +195,7 @@ impl DocumentEditorModel {
             change_set: inverted_change_set,
             selection: self.selection,
         });
-        self.push_revision(item.change_set.clone(), 0.0);
+        self.push_local_revision(item.change_set.clone(), 0.0);
         Some((item.change_set, item.selection))
     }
 
@@ -148,7 +208,7 @@ impl DocumentEditorModel {
             Date::now() + MAX_REVISION_EDITABLE_TIME
         };
         if should_start_new_revision || !is_revision_editable(self.local_revisions.back()) {
-            self.push_revision(change_set.clone(), editable_until);
+            self.push_local_revision(change_set.clone(), editable_until);
             self.undo_stack.push(UndoRedoItem {
                 change_set: ChangeSet::new(),
                 selection: self.selection,
@@ -166,16 +226,23 @@ impl DocumentEditorModel {
         }
         let last_revision = &self.local_revisions.back().unwrap();
         let undo_item = &mut self.undo_stack.last_mut().unwrap();
-        undo_item.change_set = invert(&self.value_before_last_revision, &last_revision.change_set);
+        undo_item.change_set = invert(&self.value_before_last_local_revision, &last_revision.change_set);
         (change_set, input_event.selection)
     }
 
-    fn push_revision(&mut self, change_set: ChangeSet, editable_until: f64) {
-        self.value_before_last_revision = self.value.clone();
+    fn push_local_revision(&mut self, change_set: ChangeSet, editable_until: f64) {
+        self.value_before_last_local_revision = self.value.clone();
         self.local_revisions.push_back(LocalDocumentRevision {
             change_set,
             editable_until,
         });
+    }
+
+    fn last_committed_revision_number(&self) -> i64 {
+        match self.committed_revisions.last().as_ref() {
+            Some(rev) => rev.revision_number,
+            None => 0,
+        }
     }
 }
 
@@ -240,7 +307,7 @@ fn js_string_to_vec_u32(js_string: &JsString) -> Vec<u32> {
     ret
 }
 
-fn change_set_to_debug_description(change_set: &ChangeSet) -> String {
+fn get_change_set_description(change_set: &ChangeSet) -> String {
     let mut ret = String::new();
     let mut is_first = true;
     for change_op in &change_set.ops {

@@ -77,6 +77,18 @@ function DocumentEditor(props: any) {
     setDebugRevisions(documentEditorModel.getDebugRevisions());
   }
 
+  function submitNextRevision() {
+    documentEditorModel.submitNextRevision();
+    setDebugRevisions(documentEditorModel.getDebugRevisions());
+  }
+
+  function commitSubmittedRevision() {
+    documentEditorModel.commitSubmittedRevision();
+    setDebugRevisions(documentEditorModel.getDebugRevisions());
+  }
+
+  const hasSubmittedRevision = documentEditorModel.hasSubmittedRevision();
+
   return (
     <div className="DocumentEditor">
       <div className="DocumentEditor-controls">
@@ -93,10 +105,19 @@ function DocumentEditor(props: any) {
           { debugSelection.toString() }
         </div>
         <div className="DocumentEditor-revisions">
+          <div className="DocumentEditor-submitRevision">
+            <div>
+              {hasSubmittedRevision ?
+                <button onClick={commitSubmittedRevision}>Commit Next Revision</button>
+                :
+                <button onClick={submitNextRevision}>Submit Next Revision</button>
+              }
+            </div>
+          </div>
           <ul className="DocumentEditor-revisionsList">
             {debugRevisions.map((revision, i) =>
               <li key={i}>{revision}</li>
-            ).reverse()}
+            )}
           </ul>
         </div>
       </div>
