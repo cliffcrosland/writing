@@ -86,7 +86,7 @@ fn create_test_dynamodb_client() -> DynamoDbClient {
     let credentials_provider = rusoto_credential::DefaultCredentialsProvider::new().unwrap();
     let region = rusoto_core::Region::Custom {
         name: "testing".to_string(),
-        endpoint: "http://localhost:8000".to_string(),
+        endpoint: "http://127.0.0.1:8000".to_string(),
     };
     DynamoDbClient::new_with(request_dispatcher, credentials_provider, region)
 }
@@ -105,7 +105,7 @@ impl Drop for TestDynamoDb {
 }
 
 async fn create_test_tables(dynamodb_shard: i32, dynamodb_client: &dyn DynamoDb) {
-    for table_def in crate::dynamodb::schema::TABLE_DEFINITIONS.iter() {
+    for table_def in dynamodb_schema::TABLE_DEFINITIONS.iter() {
         // Local DynamoDB sometimes experiences ephemeral errors when creating tables. Retry a few
         // times until we succeed. Sleep briefly between attempts.
         let mut success = false;
@@ -124,7 +124,7 @@ async fn create_test_tables(dynamodb_shard: i32, dynamodb_client: &dyn DynamoDb)
 }
 
 async fn delete_test_tables(dynamodb_shard: i32, dynamodb_client: &dyn DynamoDb) {
-    for table_def in crate::dynamodb::schema::TABLE_DEFINITIONS.iter() {
+    for table_def in dynamodb_schema::TABLE_DEFINITIONS.iter() {
         let table_name = test_table_name(dynamodb_shard, &table_def.table_name);
         let _result = dynamodb_client
             .delete_table(DeleteTableInput {

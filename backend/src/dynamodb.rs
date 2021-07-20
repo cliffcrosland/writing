@@ -1,6 +1,3 @@
-#[cfg(test)]
-pub mod schema;
-
 use std::collections::HashMap;
 
 use bytes::Bytes;

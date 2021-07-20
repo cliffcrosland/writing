@@ -1,10 +1,3 @@
-#![cfg(test)]
-// Note: The DynamoDB schema in this file exists for the sake of documentation and testing. We do
-// not compile the code in this file into the release binary.
-//
-// Tables in the staging and production environments are created and maintained manually in the AWS
-// UI. We want to make important decisions about the tables using the AWS UI, not automatically
-// (eg. table billing modes).
 use lazy_static::lazy_static;
 use rusoto_dynamodb::{
     AttributeDefinition, CreateTableInput, GlobalSecondaryIndex, KeySchemaElement, Projection,
@@ -195,30 +188,6 @@ lazy_static! {
             key_schema: vec![
                 key_schema_elem("doc_id", "HASH"),
                 key_schema_elem("revision_number", "RANGE"),
-            ],
-            provisioned_throughput: default_provisioned_throughput(),
-            ..Default::default()
-        },
-        CreateTableInput {
-            /*
-             * advisory_locks
-             *
-             *   lock_key: string
-             *   lease_id: string, ll_<id>
-             *   client_name: string,
-             *   lease_duration_ms: integer
-             *
-             * primary key:
-             *
-             *   [lock_key]
-             *
-             */
-            table_name: "advisory_locks".to_string(),
-            attribute_definitions: vec![
-                attr_def("lock_key", "S"),
-            ],
-            key_schema: vec![
-                key_schema_elem("lock_key", "HASH"),
             ],
             provisioned_throughput: default_provisioned_throughput(),
             ..Default::default()
