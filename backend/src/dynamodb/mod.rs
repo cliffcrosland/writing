@@ -1,4 +1,3 @@
-pub mod lock;
 #[cfg(test)]
 pub mod schema;
 
