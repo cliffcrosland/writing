@@ -11,9 +11,10 @@ actix-session = "0.4"
 actix-web = "3"
 aho-corasick = "0.7"
 anyhow = "1"
+askama = "0.10"
 base-62 = "0.1.1"
 bcrypt = "0.8"
-bytes = "1"
+bytes = "0.5"
 chrono = "0.4"
 clap = "2"
 cookie = "0.14"
@@ -23,12 +24,12 @@ lazy_static = "1.4"
 log = "0.4"
 ot = { path = "../ot" }
 prost = "0.6"
-rusoto_core = "0.46"
-rusoto_credential = "0.46"
-rusoto_dynamodb = "0.46"
+rusoto_core = "0.45"
+rusoto_credential = "0.45"
+rusoto_dynamodb = "0.45"
 serde = "1.0"
 simple_logger = "1.9"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "0.2", features = ["full"] }
 tonic = "0.3"
 uuid = { version = "0.8", features = ["v4"] }
 

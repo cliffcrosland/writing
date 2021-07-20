@@ -43,8 +43,10 @@ async fn main() -> anyhow::Result<()> {
             .service(http::api::documents::update_document_title)
             .service(http::app::home)
             .service(http::marketing::home)
-            .service(http::sessions::log_in)
-            .service(http::sessions::log_out)
+            .service(http::sessions::get_log_in)
+            .service(http::sessions::get_sign_up)
+            .service(http::sessions::submit_log_in)
+            .service(http::sessions::submit_log_out)
     })
     .bind(format!("127.0.0.1:{}", &config().http_port))?
     .run()

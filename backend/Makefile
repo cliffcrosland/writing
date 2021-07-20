@@ -7,6 +7,14 @@ check:
 release:
 	cargo build --release
 
+run:
+	cargo build
+	./target/debug/backend
+
+run_release:
+	cargo build --release
+	./target/release/backend
+
 lint:
 	cargo clippy
 

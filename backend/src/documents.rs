@@ -43,7 +43,7 @@ pub async fn create_document(
             request,
         );
     };
-    if session_user.org_id.as_str() != &request.org_id {
+    if session_user.org_id.as_str() != request.org_id {
         log_error("org_id mismatch".to_string());
         return Err(error::ErrorForbidden(""));
     }

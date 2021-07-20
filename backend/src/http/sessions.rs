@@ -1,6 +1,8 @@
 use actix_session::Session;
-use actix_web::http::header;
-use actix_web::{error, post, web, HttpResponse};
+use actix_web::dev::HttpResponseBuilder;
+use actix_web::http::{header, StatusCode};
+use actix_web::{error, get, post, web, HttpResponse};
+use askama::Template;
 use rusoto_dynamodb::{DynamoDb, GetItemInput, QueryInput, UpdateItemInput};
 use serde::{Deserialize, Serialize};
 
@@ -14,12 +16,68 @@ pub struct LoginForm {
     pub password: String,
 }
 
+#[derive(Template)]
+#[template(path = "login.html")]
+struct LoginTemplate {
+    email: String,
+    password: String,
+    error_message: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct SignUpForm {
+    pub email: String,
+    pub password: String,
+    pub password_confirmation: String,
+}
+
+#[derive(Template)]
+#[template(path = "sign_up.html")]
+struct SignUpTemplate {
+    error_message: String,
+}
+
+#[get("/log_in")]
+pub async fn get_log_in() -> actix_web::Result<HttpResponse> {
+    let body = LoginTemplate {
+        email: String::new(),
+        password: String::new(),
+        error_message: String::new(),
+    }.render().unwrap();
+    Ok(HttpResponse::Ok().content_type("text/html; charset=utf-8").body(body))
+}
+
+#[get("/sign_up")]
+pub async fn get_sign_up() -> actix_web::Result<HttpResponse> {
+    let body = SignUpTemplate {
+        error_message: String::new()
+    }.render().unwrap();
+    Ok(HttpResponse::Ok().content_type("text/html; charset=utf-8").body(body))
+}
+
 #[post("/log_in")]
-pub async fn log_in(
+pub async fn submit_log_in(
     session: Session,
     form: web::Form<LoginForm>,
     service: web::Data<BackendService>,
 ) -> actix_web::Result<HttpResponse> {
+    let error_response = |form: &LoginForm, status_code: StatusCode| -> HttpResponse {
+        let error_message = match status_code {
+            StatusCode::NOT_FOUND => "User was not found, or password was incorrect.",
+            _ => "Sorry, an error occurred. Please try again later.",
+        };
+        let body = LoginTemplate {
+            email: form.email.clone(),
+            password: form.password.clone(),
+            error_message: String::from(error_message),
+        }.render().unwrap();
+        HttpResponseBuilder::new(status_code).content_type("text/html; charset=utf-8").body(body)
+    };
+
+    if form.email.is_empty() || form.password.is_empty() {
+        return Ok(error_response(&form, StatusCode::NOT_FOUND));
+    }
+
     let output = service
         .dynamodb_client
         .get_item(GetItemInput {
@@ -31,11 +89,11 @@ pub async fn log_in(
         .await
         .map_err(|e| {
             log::error!("{}", e);
-            error::ErrorInternalServerError("")
+            error_response(&form, StatusCode::INTERNAL_SERVER_ERROR)
         })?;
 
     if output.item.is_none() {
-        return Err(error::ErrorNotFound(""));
+        return Ok(error_response(&form, StatusCode::NOT_FOUND));
     }
     let item = output.item.unwrap();
     let user_id = av_get_s(&item, "id").ok_or_else(|| error::ErrorNotFound(""))?;
@@ -45,10 +103,10 @@ pub async fn log_in(
     // Check to see if password matches
     let password_matched = bcrypt::verify(&form.password, &hashed_password).map_err(|e| {
         log::error!("{}", e);
-        error::ErrorInternalServerError("")
+        error_response(&form, StatusCode::INTERNAL_SERVER_ERROR)
     })?;
     if !password_matched {
-        return Err(error::ErrorNotFound(""));
+        return Ok(error_response(&form, StatusCode::NOT_FOUND));
     }
 
     // Find the most recent org login for this user. Use that org for login.
@@ -69,17 +127,17 @@ pub async fn log_in(
         .await
         .map_err(|e| {
             log::error!("{}", e);
-            error::ErrorInternalServerError("")
+            error_response(&form, StatusCode::INTERNAL_SERVER_ERROR)
         })?;
     if output.items.is_none() {
-        return Err(error::ErrorNotFound(""));
+        return Ok(error_response(&form, StatusCode::NOT_FOUND));
     }
     let items = output.items.unwrap();
     if items.len() != 1 {
-        return Err(error::ErrorNotFound(""));
+        return Ok(error_response(&form, StatusCode::NOT_FOUND));
     }
     let item = &items[0];
-    let org_id = av_get_s(&item, "org_id").ok_or_else(|| error::ErrorNotFound(""))?;
+    let org_id = av_get_s(&item, "org_id").ok_or_else(|| error_response(&form, StatusCode::NOT_FOUND))?;
 
     // Update last_login_at value to be "now"
     let now = chrono::Utc::now();
@@ -98,17 +156,17 @@ pub async fn log_in(
         .await
         .map_err(|e| {
             log::error!("{}", e);
-            error::ErrorInternalServerError("")
+            error_response(&form, StatusCode::INTERNAL_SERVER_ERROR)
         })?;
 
     // Store org_id and user_id in session cookie. A user who belongs to multiple orgs may switch
     // the org, which will update org_id in their session.
     session
         .set("org_id", org_id)
-        .map_err(|_| error::ErrorInternalServerError(""))?;
+        .map_err(|_| error_response(&form, StatusCode::INTERNAL_SERVER_ERROR))?;
     session
         .set("user_id", user_id)
-        .map_err(|_| error::ErrorInternalServerError(""))?;
+        .map_err(|_| error_response(&form, StatusCode::INTERNAL_SERVER_ERROR))?;
 
     // We use "303 See Other" redirect so that refreshing the destination page does not re-submit
     // the log_in form via POST.
@@ -120,7 +178,7 @@ pub async fn log_in(
 }
 
 #[post("/log_out")]
-pub async fn log_out(session: Session) -> actix_web::Result<HttpResponse> {
+pub async fn submit_log_out(session: Session) -> actix_web::Result<HttpResponse> {
     session.purge();
     // TODO(cliff): Redirect to home?
     Ok(HttpResponse::Ok().finish())
@@ -177,7 +235,7 @@ mod tests {
             App::new()
                 .data(default_backend_service().await)
                 .wrap(default_cookie_session())
-                .service(log_in),
+                .service(submit_log_in),
         )
         .await;
 
@@ -226,7 +284,7 @@ mod tests {
             App::new()
                 .data(default_backend_service().await)
                 .wrap(default_cookie_session())
-                .service(log_in),
+                .service(submit_log_in),
         )
         .await;
 
@@ -272,7 +330,7 @@ mod tests {
             App::new()
                 .data(default_backend_service().await)
                 .wrap(default_cookie_session())
-                .service(log_in),
+                .service(submit_log_in),
         )
         .await;
 
