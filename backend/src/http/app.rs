@@ -1,4 +1,5 @@
 use actix_session::Session;
+use actix_web::http::header;
 use actix_web::{get, web, HttpResponse};
 
 use crate::http;
@@ -10,5 +11,7 @@ pub async fn home(
     service: web::Data<BackendService>,
 ) -> actix_web::Result<HttpResponse> {
     let _user = http::get_session_user(&session, &service).await?;
-    Ok(HttpResponse::Ok().body("<p>App home goes here</p>"))
+    Ok(HttpResponse::SeeOther()
+        .set_header(header::LOCATION, "http://localhost:3000/")
+        .finish())
 }

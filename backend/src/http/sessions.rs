@@ -10,6 +10,7 @@ use rusoto_dynamodb::{
 use serde::{Deserialize, Serialize};
 
 use crate::dynamodb::{av_get_s, av_map, av_s, table_name};
+use crate::http;
 use crate::ids::{Id, IdType};
 use crate::users::UserRole;
 use crate::utils;
@@ -51,7 +52,17 @@ struct SignUpTemplate {
 }
 
 #[get("/log_in")]
-pub async fn get_log_in() -> actix_web::Result<HttpResponse> {
+pub async fn get_log_in(
+    session: Session,
+    service: web::Data<BackendService>,
+) -> actix_web::Result<HttpResponse> {
+    let user = http::get_session_user(&session, &service).await;
+    if user.is_ok() {
+        return Ok(HttpResponse::SeeOther()
+            .header(header::LOCATION, "/app")
+            .finish());
+    }
+
     let body = LoginTemplate {
         email: String::new(),
         password: String::new(),
@@ -65,7 +76,16 @@ pub async fn get_log_in() -> actix_web::Result<HttpResponse> {
 }
 
 #[get("/sign_up")]
-pub async fn get_sign_up() -> actix_web::Result<HttpResponse> {
+pub async fn get_sign_up(
+    session: Session,
+    service: web::Data<BackendService>,
+) -> actix_web::Result<HttpResponse> {
+    let user = http::get_session_user(&session, &service).await;
+    if user.is_ok() {
+        return Ok(HttpResponse::SeeOther()
+            .header(header::LOCATION, "/app")
+            .finish());
+    }
     let body = SignUpTemplate {
         email: String::new(),
         password: String::new(),
@@ -82,8 +102,8 @@ pub async fn get_sign_up() -> actix_web::Result<HttpResponse> {
 #[post("/log_in")]
 pub async fn submit_log_in(
     session: Session,
-    form: web::Form<LoginForm>,
     service: web::Data<BackendService>,
+    form: web::Form<LoginForm>,
 ) -> actix_web::Result<HttpResponse> {
     let error_response = |status_code: StatusCode| -> HttpResponse {
         let error_message = match status_code {
@@ -197,19 +217,19 @@ pub async fn submit_log_in(
         .map_err(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR))?;
 
     // We use "303 See Other" redirect so that refreshing the destination page does not re-submit
-    // the log_in form via POST.
+    // the form via POST.
     //
     // See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Redirections#temporary_redirections
     Ok(HttpResponse::SeeOther()
-        .set_header(header::LOCATION, "/app") // TODO(cliff): Do we need full URL?
+        .set_header(header::LOCATION, "/app")
         .finish())
 }
 
 #[post("/sign_up")]
 pub async fn submit_sign_up(
     session: Session,
-    form: web::Form<SignUpForm>,
     service: web::Data<BackendService>,
+    form: web::Form<SignUpForm>,
 ) -> actix_web::Result<HttpResponse> {
     let error_response = |status_code: StatusCode, error_message: &str| -> HttpResponse {
         let body = SignUpTemplate {
@@ -422,19 +442,20 @@ pub async fn submit_sign_up(
     })?;
 
     // We use "303 See Other" redirect so that refreshing the destination page does not re-submit
-    // the log_in form via POST.
+    // the form via POST.
     //
     // See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Redirections#temporary_redirections
     Ok(HttpResponse::SeeOther()
-        .set_header(header::LOCATION, "/app") // TODO(cliff): Do we need full URL?
+        .set_header(header::LOCATION, "/app")
         .finish())
 }
 
 #[post("/log_out")]
 pub async fn submit_log_out(session: Session) -> actix_web::Result<HttpResponse> {
     session.purge();
-    // TODO(cliff): Redirect to home?
-    Ok(HttpResponse::Ok().finish())
+    Ok(HttpResponse::SeeOther()
+        .set_header(header::LOCATION, "/log_in")
+        .finish())
 }
 
 fn validate_sign_up_form(form: &SignUpForm) -> Result<(), String> {
