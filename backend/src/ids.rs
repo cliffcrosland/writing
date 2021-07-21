@@ -30,6 +30,15 @@ use uuid::Uuid;
 
 use crate::utils::profanity;
 
+/// The type of object an identifier indentifies.
+#[derive(Clone, Copy, Debug, IntoEnumIterator, PartialEq, Eq, Hash)]
+pub enum IdType {
+    Document,
+    LockLease,
+    Organization,
+    User,
+}
+
 /// An identifier with a type. Example:
 /// ```
 /// let id = Id::new(IdType::User);
@@ -90,15 +99,6 @@ impl Id {
     pub fn as_str(&self) -> &str {
         &self.id_str
     }
-}
-
-/// The type of object an identifier indentifies.
-#[derive(Clone, Copy, Debug, IntoEnumIterator, PartialEq, Eq, Hash)]
-pub enum IdType {
-    Document,
-    LockLease,
-    Organization,
-    User,
 }
 
 impl IdType {

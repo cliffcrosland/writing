@@ -42,7 +42,7 @@ pub async fn create_organization_user(
             item: av_map(&[
                 av_s("org_id", org_id.as_str()),
                 av_s("user_id", user_id.as_str()),
-                av_n("role", 0_i32.to_string()),
+                av_n("user_role", 0_i32.to_string()),
                 av_s(
                     "last_login_at",
                     &utils::time::date_time_iso_str(last_login_at),

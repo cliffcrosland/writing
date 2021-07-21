@@ -47,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
             .service(http::sessions::get_sign_up)
             .service(http::sessions::submit_log_in)
             .service(http::sessions::submit_log_out)
+            .service(http::sessions::submit_sign_up)
     })
     .bind(format!("127.0.0.1:{}", &config().http_port))?
     .run()

@@ -19,7 +19,7 @@ use crate::BackendService;
 pub struct SessionUser {
     pub user_id: Id,
     pub org_id: Id,
-    pub role: UserRole,
+    pub user_role: UserRole,
 }
 
 const SESSION_COOKIE_MAX_AGE: i64 = 30 * 86400; // 30 days
@@ -54,7 +54,7 @@ pub async fn get_session_user(
                 av_s("org_id", org_id.as_str()),
                 av_s("user_id", user_id.as_str()),
             ]),
-            projection_expression: Some("role".to_string()),
+            projection_expression: Some("user_role".to_string()),
             ..Default::default()
         })
         .await
@@ -67,15 +67,16 @@ pub async fn get_session_user(
         return Err(error::ErrorUnauthorized(""));
     }
     let item = output.item.unwrap();
-    let role_val: i32 = av_get_n(&item, "role").ok_or_else(|| error::ErrorUnauthorized(""))?;
-    let role: UserRole = role_val.try_into().map_err(|_| {
-        log::error!("Invalid role value: {}", role_val);
+    let user_role_val: i32 =
+        av_get_n(&item, "user_role").ok_or_else(|| error::ErrorUnauthorized(""))?;
+    let user_role: UserRole = user_role_val.try_into().map_err(|_| {
+        log::error!("Invalid user_role value: {}", user_role_val);
         error::ErrorUnauthorized("")
     })?;
     Ok(SessionUser {
         user_id,
         org_id,
-        role,
+        user_role,
     })
 }
 

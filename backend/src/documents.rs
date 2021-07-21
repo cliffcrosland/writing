@@ -519,7 +519,7 @@ mod tests {
         let session_user1 = SessionUser {
             user_id: user_id1.clone(),
             org_id: org_id1.clone(),
-            role: UserRole::Default,
+            user_role: UserRole::Default,
         };
 
         // Document 2:
@@ -631,7 +631,7 @@ mod tests {
         let session_user = SessionUser {
             user_id: user_id.clone(),
             org_id: org_id.clone(),
-            role: UserRole::Default,
+            user_role: UserRole::Default,
         };
 
         // Add a change set to the revision log. Prepare a new change set to be submitted by the
@@ -717,7 +717,7 @@ mod tests {
         let session_user = SessionUser {
             user_id: user_id.clone(),
             org_id: org_id.clone(),
-            role: UserRole::Default,
+            user_role: UserRole::Default,
         };
         create_document(
             &db.dynamodb_client,
@@ -814,7 +814,7 @@ mod tests {
         let mut session_user = SessionUser {
             user_id: created_by_user_id.clone(),
             org_id: org_id.clone(),
-            role: UserRole::Default,
+            user_role: UserRole::Default,
         };
 
         let result = validate_user_has_some_permission(
@@ -874,7 +874,7 @@ mod tests {
         let session_user = SessionUser {
             user_id: Id::new(IdType::User),
             org_id: org_id.clone(),
-            role: UserRole::Default,
+            user_role: UserRole::Default,
         };
 
         let result = validate_user_has_some_permission(
@@ -946,7 +946,7 @@ mod tests {
         let session_user = SessionUser {
             user_id: reader_user_id.clone(),
             org_id: org_id.clone(),
-            role: UserRole::Default,
+            user_role: UserRole::Default,
         };
 
         let result = validate_user_has_some_permission(
@@ -1005,7 +1005,7 @@ mod tests {
         let session_user = SessionUser {
             user_id: Id::new(IdType::User),
             org_id: org_id2.clone(),
-            role: UserRole::Default,
+            user_role: UserRole::Default,
         };
 
         let result = validate_user_has_some_permission(
@@ -1038,7 +1038,7 @@ mod tests {
         let session_user = SessionUser {
             user_id: Id::new(IdType::User),
             org_id: org_id.clone(),
-            role: UserRole::Default,
+            user_role: UserRole::Default,
         };
 
         let result = validate_user_has_some_permission(

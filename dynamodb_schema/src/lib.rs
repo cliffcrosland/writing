@@ -1,3 +1,12 @@
+/// Schema for the DynamoDB tables.
+///
+/// NOTE: When you are choosing attribute names, avoid using DynamoDB Reserved Words unless you
+/// have no other choice. Query ergonomics get bad otherwise. For example, instead of using "role"
+/// as an attribute, use "user_role" since it is not a reserved word.
+///
+/// Here is the list of DynamoDB Reserved Words:
+/// https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/ReservedWords.html
+
 use lazy_static::lazy_static;
 use rusoto_dynamodb::{
     AttributeDefinition, CreateTableInput, GlobalSecondaryIndex, KeySchemaElement, Projection,
@@ -15,7 +24,6 @@ lazy_static! {
              *   email: string
              *   name: string
              *   hashed_password: string
-             *   name: string
              *   photo_url: string
              *   created_at: string, iso 8601 date time
              *   updated_at: string, iso 8601 date time
@@ -78,7 +86,7 @@ lazy_static! {
              *   org_id: string, o_<id>
              *   user_id: string, u_<id>
              *   last_login_at: string, iso 8601 date time
-             *   role: int
+             *   user_role: int
              *   created_at: string, iso 8601 date time
              *   updated_at: string, iso 8601 date time
              *
