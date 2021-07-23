@@ -164,7 +164,7 @@ pub async fn submit_log_in(
             table_name: table_name("organization_users"),
             // Scan the [user_id, last_login_at] index from most recent login to least. Take the
             // first result we find.
-            index_name: Some("organization_users_user_id_last_login_at-index".to_string()),
+            index_name: Some("user_id-last_login_at-index".to_string()),
             scan_index_forward: Some(false),
             limit: Some(1),
             key_condition_expression: Some("user_id = :user_id".to_string()),

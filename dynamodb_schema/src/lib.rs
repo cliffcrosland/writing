@@ -42,7 +42,7 @@ lazy_static! {
             ],
             key_schema: vec![key_schema_elem("email", "HASH"),],
             global_secondary_indexes: Some(vec![GlobalSecondaryIndex {
-                index_name: "users_id-index".to_string(),
+                index_name: "id-index".to_string(),
                 key_schema: vec![KeySchemaElement {
                     attribute_name: "id".to_string(),
                     key_type: "HASH".to_string(),
@@ -109,7 +109,7 @@ lazy_static! {
                 key_schema_elem("user_id", "RANGE"),
             ],
             global_secondary_indexes: Some(vec![GlobalSecondaryIndex {
-                index_name: "organization_users_user_id_last_login_at-index".to_string(),
+                index_name: "user_id-last_login_at-index".to_string(),
                 key_schema: vec![
                     key_schema_elem("user_id", "HASH"),
                     key_schema_elem("last_login_at", "RANGE"),
@@ -133,6 +133,7 @@ lazy_static! {
              *   created_by_user_id: string, u_<id>
              *   org_level_sharing_permission: int, enum
              *   created_at: string, iso 8601 date time
+             *   updated_at: string, iso 8601 date time
              *
              * primary key:
              *
@@ -142,8 +143,23 @@ lazy_static! {
             table_name: "documents".to_string(),
             attribute_definitions: vec![
                 attr_def("id", "S"),
+                attr_def("created_by_user_id", "S"),
+                attr_def("updated_at", "S"),
             ],
             key_schema: vec![key_schema_elem("id", "HASH"),],
+            global_secondary_indexes: Some(vec![GlobalSecondaryIndex {
+                index_name: "created_by_user_id-updated_at-index".to_string(),
+                key_schema: vec![
+                    key_schema_elem("created_by_user_id", "HASH"),
+                    key_schema_elem("updated_at", "RANGE"),
+                ],
+                projection: Projection {
+                    projection_type: Some("ALL".to_string()),
+                    ..Default::default()
+                },
+                provisioned_throughput: default_provisioned_throughput(),
+                ..Default::default()
+            }]),
             provisioned_throughput: default_provisioned_throughput(),
             ..Default::default()
         },

@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
             ))
             .service(http::api::documents::create_document)
             .service(http::api::documents::get_document_revisions)
+            .service(http::api::documents::list_my_documents)
             .service(http::api::documents::submit_document_change_set)
             .service(http::api::documents::update_document_title)
             .service(http::app::home)

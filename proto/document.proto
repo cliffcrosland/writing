@@ -124,3 +124,12 @@ message UpdateDocumentTitleRequest {
 
 message UpdateDocumentTitleResponse {
 }
+
+message ListMyDocumentsRequest {
+  string updated_before_date_time = 1;
+}
+
+message ListMyDocumentsResponse {
+  repeated Document documents = 1;
+  string next_updated_before_date_time = 2;
+}

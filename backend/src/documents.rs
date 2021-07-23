@@ -9,9 +9,10 @@ use rusoto_dynamodb::{
 
 use ot::writing_proto::{
     submit_document_change_set_response::ResponseCode, ChangeSet, CreateDocumentRequest,
-    CreateDocumentResponse, DocumentRevision, DocumentSharingPermission,
-    GetDocumentRevisionsRequest, GetDocumentRevisionsResponse, SubmitDocumentChangeSetRequest,
-    SubmitDocumentChangeSetResponse, UpdateDocumentTitleRequest, UpdateDocumentTitleResponse,
+    CreateDocumentResponse, Document, DocumentRevision, DocumentSharingPermission,
+    GetDocumentRevisionsRequest, GetDocumentRevisionsResponse, ListMyDocumentsRequest,
+    ListMyDocumentsResponse, SubmitDocumentChangeSetRequest, SubmitDocumentChangeSetResponse,
+    UpdateDocumentTitleRequest, UpdateDocumentTitleResponse,
 };
 
 use crate::dynamodb::{av_b, av_get_b, av_get_n, av_get_s, av_map, av_n, av_s, table_name};
@@ -471,6 +472,86 @@ async fn validate_user_has_some_permission(
     } else {
         Err(error::ErrorForbidden(""))
     }
+}
+
+pub async fn list_my_documents(
+    dynamodb_client: &DynamoDbClient,
+    session_user: &SessionUser,
+    request: &ListMyDocumentsRequest,
+) -> actix_web::Result<ListMyDocumentsResponse> {
+    let log_error = |error_message: String| {
+        log::error!(
+            "Error occurred: \"{}\" [list_documents] \
+            [session_user: {:?}, request: {:?}]",
+            error_message,
+            session_user,
+            request,
+        );
+    };
+    let input = QueryInput {
+        table_name: table_name("documents"),
+        index_name: Some(String::from("created_by_user_id-updated_at-index")),
+        scan_index_forward: Some(false),
+        key_condition_expression: Some(String::from(
+            "created_by_user_id = :created_by_user_id AND updated_at < :updated_at",
+        )),
+        filter_expression: Some(String::from(
+            "org_id = :org_id",
+        )),
+        expression_attribute_values: Some(av_map(&[
+            av_s(":created_by_user_id", session_user.user_id.as_str()),
+            av_s(":org_id", session_user.org_id.as_str()),
+            av_s(":updated_at", &request.updated_before_date_time),
+        ])),
+        projection_expression: Some(String::from(
+            "id, org_id, title, created_by_user_id, org_level_sharing_permission, created_at, updated_at"
+        )),
+        ..QueryInput::default()
+    };
+    let output = dynamodb_client.query(input).await.map_err(|e| {
+        log_error(e.to_string());
+        error::ErrorInternalServerError("")
+    })?;
+    let mut response = ListMyDocumentsResponse::default();
+    if output.items.is_none() {
+        return Ok(response);
+    }
+    let items = output.items.unwrap();
+    if items.is_empty() {
+        return Ok(response);
+    }
+    let missing_field_error = || {
+        log_error("document is missing a field".to_string());
+        error::ErrorInternalServerError("")
+    };
+    for item in items.into_iter() {
+        response.documents.push(Document {
+            id: av_get_s(&item, "id")
+                .ok_or_else(missing_field_error)?
+                .to_string(),
+            org_id: av_get_s(&item, "org_id")
+                .ok_or_else(missing_field_error)?
+                .to_string(),
+            title: av_get_s(&item, "title")
+                .ok_or_else(missing_field_error)?
+                .to_string(),
+            created_by_user_id: av_get_s(&item, "created_by_user_id")
+                .ok_or_else(missing_field_error)?
+                .to_string(),
+            org_level_sharing_permission: av_get_n(&item, "org_level_sharing_permission")
+                .ok_or_else(missing_field_error)?,
+            created_at: av_get_s(&item, "created_at")
+                .ok_or_else(missing_field_error)?
+                .to_string(),
+            updated_at: av_get_s(&item, "updated_at")
+                .ok_or_else(missing_field_error)?
+                .to_string(),
+        });
+    }
+    if let Some(last_document) = response.documents.last().as_ref() {
+        response.next_updated_before_date_time = last_document.updated_at.clone();
+    }
+    Ok(response)
 }
 
 #[cfg(test)]

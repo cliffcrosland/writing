@@ -5,8 +5,8 @@ pub mod documents {
     use prost::Message;
 
     use ot::writing_proto::{
-        CreateDocumentRequest, GetDocumentRevisionsRequest, SubmitDocumentChangeSetRequest,
-        UpdateDocumentTitleRequest,
+        CreateDocumentRequest, GetDocumentRevisionsRequest, ListMyDocumentsRequest,
+        SubmitDocumentChangeSetRequest, UpdateDocumentTitleRequest,
     };
 
     use crate::documents;
@@ -39,6 +39,20 @@ pub mod documents {
         let response =
             documents::get_document_revisions(&service.dynamodb_client, &session_user, &request)
                 .await?;
+        http::create_protobuf_http_response(&response)
+    }
+
+    #[post("/api/documents.list_my_documents")]
+    pub async fn list_my_documents(
+        session: Session,
+        request_body: actix_web::web::Bytes,
+        service: web::Data<BackendService>,
+    ) -> actix_web::Result<HttpResponse> {
+        let session_user = http::get_session_user(&session, &service).await?;
+        let request = ListMyDocumentsRequest::decode(&request_body[..])
+            .map_err(|_| error::ErrorBadRequest(""))?;
+        let response =
+            documents::list_my_documents(&service.dynamodb_client, &session_user, &request).await?;
         http::create_protobuf_http_response(&response)
     }
 

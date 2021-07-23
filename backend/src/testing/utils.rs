@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 
 use actix_session::CookieSession;
@@ -109,15 +109,23 @@ async fn create_test_tables(dynamodb_shard: i32, dynamodb_client: &dyn DynamoDb)
         // Local DynamoDB sometimes experiences ephemeral errors when creating tables. Retry a few
         // times until we succeed. Sleep briefly between attempts.
         let mut success = false;
+        let mut errors: HashSet<String> = HashSet::new();
         for _ in 1..=100 {
             let mut table_def = table_def.clone();
-            table_def.table_name = test_table_name(dynamodb_shard, &table_def.table_name);
+            let table_name = test_table_name(dynamodb_shard, &table_def.table_name);
+            table_def.table_name = table_name.clone();
             let result = dynamodb_client.create_table(table_def).await;
             if result.is_ok() {
                 success = true;
                 break;
+            } else {
+                let error = format!("Error creating table: {}, error: {}", &table_name, result.err().unwrap());
+                errors.insert(error);
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if !success {
+            dbg!(errors);
         }
         assert!(success);
     }
