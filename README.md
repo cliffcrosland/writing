@@ -30,7 +30,17 @@ documentation and related concepts.
 
 
 ## Todos
-- Frontend
-  - Integrate frontend document editor with backend server.
-  - Implement transpose for undo/redo.
+- Frontend: Resolve CORS-related security error when local JS app tries to make
+  API requests to local backend.
+- Frontend: As a user, I want to be able to view a list of documents that I am
+  allowed to view or edit.
+- Frontend: As a user, I want to be able to create a new document and start to
+  edit it.
+- Frontend/Backend: As a user, I want my edits to be saved to the backend.
+- Frontend/Backend/OT: As a user, I want to be able to use Ctrl-Z and
+  Ctrl-Shift-Z to undo/redo local changes and have them compose properly with
+  remote changes that have happened in the meantime. Probably need to tweak
+  ot::transform, or maybe create a new function, possibly named ot:transpose.
+- Frontend: As a user, I want my local edits to be saved to local storage for
+  offline mode.
 - Choose a good name for this project.
