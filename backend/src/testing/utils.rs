@@ -119,7 +119,11 @@ async fn create_test_tables(dynamodb_shard: i32, dynamodb_client: &dyn DynamoDb)
                 success = true;
                 break;
             } else {
-                let error = format!("Error creating table: {}, error: {}", &table_name, result.err().unwrap());
+                let error = format!(
+                    "Error creating table: {}, error: {}",
+                    &table_name,
+                    result.err().unwrap()
+                );
                 errors.insert(error);
             }
             std::thread::sleep(std::time::Duration::from_millis(10));

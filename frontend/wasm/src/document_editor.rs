@@ -1,13 +1,17 @@
 use std::collections::VecDeque;
 use std::fmt::Write;
+use std::sync::{Arc, Mutex};
 
-use js_sys::{Date, JsString};
+use js_sys::{Date, JsString, Promise};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::future_to_promise;
 use web_sys::console;
 
 use ot::writing_proto::{
     change_op::Op, ChangeSet, DocumentRevision, SubmitDocumentChangeSetRequest,
 };
+
+use crate::backend_api::BackendApi;
 
 // When a user is typing, their keystrokes will edit the most recent revision. Once the revision is
 // a few seconds old, it will be committed to the revision log, and a corresponding undo item will
@@ -17,11 +21,15 @@ use ot::writing_proto::{
 const MAX_REVISION_EDITABLE_TIME: f64 = 2000.0;
 
 #[wasm_bindgen]
-#[derive(Debug)]
 pub struct DocumentEditorModel {
     doc_id: String,
     org_id: String,
     user_id: String,
+    inner: Arc<Mutex<DocumentEditorModelInner>>,
+    api: Arc<BackendApi>,
+}
+
+struct DocumentEditorModelInner {
     selection: Selection,
     value: JsString,
     value_before_last_local_revision: JsString,
@@ -56,34 +64,46 @@ impl DocumentEditorModel {
             doc_id,
             org_id,
             user_id,
-            selection: Default::default(),
-            value: JsString::from(""),
-            value_before_last_local_revision: JsString::from(""),
-            committed_revisions: Vec::new(),
-            local_revisions: VecDeque::new(),
-            submitted_revision_request: None,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
+            api: Arc::new(BackendApi::new()),
+            inner: Arc::new(Mutex::new(DocumentEditorModelInner {
+                selection: Default::default(),
+                value: JsString::from(""),
+                value_before_last_local_revision: JsString::from(""),
+                committed_revisions: Vec::new(),
+                local_revisions: VecDeque::new(),
+                submitted_revision_request: None,
+                undo_stack: Vec::new(),
+                redo_stack: Vec::new(),
+            })),
         }
+    }
+
+    #[wasm_bindgen(js_name = getUserId)]
+    pub fn get_user_id(&self) -> String {
+        self.user_id.clone()
     }
 
     #[wasm_bindgen(js_name = getSelection)]
     pub fn get_selection(&self) -> Selection {
-        self.selection
+        let inner = self.inner.lock().unwrap();
+        inner.selection
     }
 
     #[wasm_bindgen(js_name = setSelection)]
     pub fn set_selection(&mut self, selection: Selection) {
-        self.selection = selection;
+        let mut inner = self.inner.lock().unwrap();
+        inner.selection = selection;
     }
 
     #[wasm_bindgen(js_name = getValue)]
     pub fn get_value(&self) -> JsString {
-        self.value.clone()
+        let inner = self.inner.lock().unwrap();
+        inner.value.clone()
     }
 
     #[wasm_bindgen(js_name = updateFromInputEvent)]
-    pub fn update_from_input_event(&mut self, input_event: InputEventParams) {
+    pub fn update_from_input_event(&self, input_event: InputEventParams) {
+        let mut inner = self.inner.lock().unwrap();
         let input_type = &input_event.input_type[..];
 
         // Handle undo/redo
@@ -96,7 +116,7 @@ impl DocumentEditorModel {
                     // Redo: Pop from redo stack, push to undo stack. Update revisions log.
                     UndoRedoType::Redo
                 };
-                let tuple = self.process_undo_redo_command(command);
+                let tuple = inner.process_undo_redo_command(command);
                 if tuple.is_none() {
                     return;
                 }
@@ -106,65 +126,106 @@ impl DocumentEditorModel {
                 // For all other edits:
                 // - Clear redo stack.
                 // - Process the edit, updating the revisions log and undo stack.
-                self.redo_stack.clear();
-                self.process_edit_command(&input_event)
+                inner.redo_stack.clear();
+                inner.process_edit_command(&input_event)
             }
         };
-        self.value = apply(&self.value, &change_set);
-        self.selection = selection;
+        inner.value = apply(&inner.value, &change_set);
+        inner.selection = selection;
     }
 
     #[wasm_bindgen(js_name = submitNextRevision)]
-    pub fn submit_next_revision(&mut self) {
-        let submitted_revision = match self.local_revisions.pop_front() {
-            Some(rev) => rev,
-            None => {
-                return;
-            }
-        };
-        let request = SubmitDocumentChangeSetRequest {
-            doc_id: self.doc_id.clone(),
-            org_id: self.org_id.clone(),
-            on_revision_number: self.last_committed_revision_number(),
-            change_set: Some(submitted_revision.change_set),
-        };
-        self.submitted_revision_request = Some(request);
-    }
+    pub fn submit_next_revision(&self) -> Promise {
+        let request: SubmitDocumentChangeSetRequest;
+        {
+            let mut inner = self.inner.lock().unwrap();
+            let submitted_revision = match inner.local_revisions.pop_front() {
+                Some(rev) => rev,
+                None => {
+                    return Promise::resolve(&JsValue::UNDEFINED);
+                }
+            };
+            request = SubmitDocumentChangeSetRequest {
+                doc_id: self.doc_id.clone(),
+                org_id: self.org_id.clone(),
+                on_revision_number: inner.last_committed_revision_number(),
+                change_set: Some(submitted_revision.change_set),
+            };
 
-    #[wasm_bindgen(js_name = commitSubmittedRevision)]
-    pub fn commit_submitted_revision(&mut self) {
-        let mut request = match self.submitted_revision_request.take() {
-            Some(req) => req,
-            None => {
-                return;
+            inner.submitted_revision_request = Some(request.clone());
+        }
+        let api = Arc::clone(&self.api);
+        let inner = Arc::clone(&self.inner);
+        let future = async move {
+            let mut response = match api.submit_document_change_set(&request).await {
+                Ok(response) => response,
+                Err(e) => {
+                    let error_message: JsValue = format!("API error: {}", e).into();
+                    console::error_1(&error_message);
+                    return Err(error_message);
+                }
+            };
+
+            use ot::writing_proto::submit_document_change_set_response::ResponseCode;
+
+            match response.response_code() {
+                ResponseCode::Ack => {
+                    if response.revisions.len() != 1 {
+                        let error_message: JsValue = format!(
+                            "Unexpected revisions length in response: {}",
+                            response.revisions.len()
+                        )
+                        .into();
+                        console::error_1(&error_message);
+                        return Err(error_message);
+                    }
+                    let committed_revision = response.revisions.pop().unwrap();
+                    let mut inner = inner.lock().unwrap();
+                    inner.committed_revisions.push(committed_revision);
+                    Ok(JsValue::UNDEFINED)
+                }
+                ResponseCode::DiscoveredNewRevisions => {
+                    // TODO(cliff): Implement this case.
+                    let error_message: JsValue = "SOMEONE ELSE ADDED REVISIONS!".into();
+                    console::error_1(&error_message);
+                    Err(error_message)
+                }
+                _ => {
+                    let error_message: JsValue = format!(
+                        "API error: Unknown response code {}",
+                        response.response_code
+                    )
+                    .into();
+                    console::error_1(&error_message);
+                    Err(error_message)
+                }
             }
         };
-        let now_iso_string: String = Date::new_0().to_iso_string().into();
-        self.committed_revisions.push(DocumentRevision {
-            doc_id: request.doc_id,
-            revision_number: request.on_revision_number + 1,
-            change_set: request.change_set.take(),
-            committed_at: now_iso_string,
-        });
+        future_to_promise(future)
     }
 
     #[wasm_bindgen(js_name = getDebugRevisions)]
     pub fn get_debug_revisions(&self) -> JsValue {
+        let inner = self.inner.lock().unwrap();
         let mut ret: Vec<String> = Vec::new();
-        for document_revision in &self.committed_revisions {
+        for document_revision in &inner.committed_revisions {
             let revision_number = document_revision.revision_number;
             let change_set = document_revision.change_set.as_ref().unwrap();
             let change_set_description = get_change_set_description(change_set);
             ret.push(format!("{}: {}", revision_number, change_set_description));
         }
-        if let Some(request) = self.submitted_revision_request.as_ref() {
+        if let Some(request) = inner.submitted_revision_request.as_ref() {
             let expected_revision_number = request.on_revision_number + 1;
             let change_set = request.change_set.as_ref().unwrap();
             let change_set_description = get_change_set_description(change_set);
-            ret.push(format!("Submitted {}: {}", expected_revision_number, change_set_description));
+            ret.push(format!(
+                "Submitted {}: {}",
+                expected_revision_number, change_set_description
+            ));
         }
-        for local_document_revision in &self.local_revisions {
-            let change_set_description = get_change_set_description(&local_document_revision.change_set);
+        for local_document_revision in &inner.local_revisions {
+            let change_set_description =
+                get_change_set_description(&local_document_revision.change_set);
             ret.push(format!("local: {}", change_set_description));
         }
         JsValue::from_serde(&ret).unwrap()
@@ -172,9 +233,13 @@ impl DocumentEditorModel {
 
     #[wasm_bindgen(js_name = hasSubmittedRevision)]
     pub fn has_submitted_revision(&self) -> bool {
-        self.submitted_revision_request.is_some()
+        let inner = self.inner.lock().unwrap();
+        inner.submitted_revision_request.is_some()
     }
+}
 
+#[wasm_bindgen]
+impl DocumentEditorModelInner {
     fn process_undo_redo_command(
         &mut self,
         undo_redo_type: UndoRedoType,
@@ -223,7 +288,10 @@ impl DocumentEditorModel {
         }
         let last_revision = &self.local_revisions.back().unwrap();
         let undo_item = &mut self.undo_stack.last_mut().unwrap();
-        undo_item.change_set = invert(&self.value_before_last_local_revision, &last_revision.change_set);
+        undo_item.change_set = invert(
+            &self.value_before_last_local_revision,
+            &last_revision.change_set,
+        );
         (change_set, input_event.selection)
     }
 

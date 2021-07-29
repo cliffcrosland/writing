@@ -185,7 +185,8 @@ pub async fn get_document_revisions(
 /// `DiscoveredNewRevisions` along with one page of new revisions.
 ///
 /// Otherwise, if the change is based on the latest revision, it will be appended to the end of the
-/// revision log. In this case, returns status code `Ack`.
+/// revision log. In this case, returns status code `Ack` and a list containing the document
+/// revision that was just appended to the revision log.
 pub async fn submit_document_change_set(
     dynamodb_client: &DynamoDbClient,
     session_user: &SessionUser,
@@ -220,16 +221,14 @@ pub async fn submit_document_change_set(
     })?;
     let change_set_binary = Bytes::from(change_set_binary);
     let new_revision_number = request.on_revision_number + 1;
+    let committed_at = time::date_time_iso_str(&chrono::Utc::now());
     let input = PutItemInput {
         table_name: table_name("document_revisions"),
         item: av_map(&[
             av_s("doc_id", &request.doc_id),
             av_n("revision_number", new_revision_number),
             av_b("change_set", change_set_binary),
-            av_s(
-                "committed_at",
-                &time::date_time_iso_str(&chrono::Utc::now()),
-            ),
+            av_s("committed_at", &committed_at),
         ]),
         // Only succeed if key (doc_id, revision_number) does not already exist.
         condition_expression: Some(String::from(
@@ -242,7 +241,12 @@ pub async fn submit_document_change_set(
         Ok(_) => Ok(SubmitDocumentChangeSetResponse {
             response_code: ResponseCode::Ack.into(),
             last_revision_number: new_revision_number,
-            revisions: Vec::new(),
+            revisions: vec![DocumentRevision {
+                doc_id: request.doc_id.clone(),
+                revision_number: new_revision_number,
+                change_set: request.change_set.clone(),
+                committed_at,
+            }],
             end_of_revisions: true,
         }),
         Err(RusotoError::Service(PutItemError::ConditionalCheckFailed(_))) => {
@@ -753,8 +757,15 @@ mod tests {
 
         assert_eq!(response.response_code(), ResponseCode::Ack);
         assert_eq!(response.last_revision_number, 2);
-        assert!(response.revisions.is_empty());
+        assert_eq!(response.revisions.len(), 1);
+        let committed_revision = &response.revisions[0];
+        assert_eq!(
+            committed_revision.change_set.as_ref().unwrap(),
+            &new_change_set
+        );
+        assert!(response.end_of_revisions);
 
+        // Verify that we can read the revision that we just wrote.
         let response = get_document_revisions(
             &db.dynamodb_client,
             &session_user,
@@ -768,8 +779,9 @@ mod tests {
 
         assert_eq!(response.last_revision_number, 2);
         assert_eq!(response.revisions.len(), 1);
+        let committed_revision = &response.revisions[0];
         assert_eq!(
-            response.revisions[0].change_set.as_ref().unwrap(),
+            committed_revision.change_set.as_ref().unwrap(),
             &new_change_set
         );
         assert!(response.end_of_revisions);

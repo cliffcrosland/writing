@@ -75,17 +75,14 @@ function DocumentEditor(props: any) {
     setDebugRevisions(documentEditorModel.getDebugRevisions());
   }
 
-  function submitNextRevision() {
-    documentEditorModel.submitNextRevision();
+  async function submitNextRevision() {
+    try {
+      await documentEditorModel.submitNextRevision();
+    } catch (e) {
+      console.error("Error submitting next revision:", e);
+    }
     setDebugRevisions(documentEditorModel.getDebugRevisions());
   }
-
-  function commitSubmittedRevision() {
-    documentEditorModel.commitSubmittedRevision();
-    setDebugRevisions(documentEditorModel.getDebugRevisions());
-  }
-
-  const hasSubmittedRevision = documentEditorModel.hasSubmittedRevision();
 
   return (
     <div className="DocumentEditor">
@@ -104,11 +101,7 @@ function DocumentEditor(props: any) {
         <div className="DocumentEditor-revisions">
           <div className="DocumentEditor-submitRevision">
             <div>
-              {hasSubmittedRevision ?
-                <button onClick={commitSubmittedRevision}>Commit Next Revision</button>
-                :
-                <button onClick={submitNextRevision}>Submit Next Revision</button>
-              }
+              <button onClick={submitNextRevision}>Submit Next Revision</button>
             </div>
           </div>
           <ul className="DocumentEditor-revisionsList">

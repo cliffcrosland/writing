@@ -28,6 +28,15 @@
     "extends": [
       "react-app",
       "react-app/jest"
+    ],
+    "overrides": [
+      {
+        "files": ["**/index_bg.js"],
+        "rules": {
+          "no-restricted-globals": "off",
+          "no-undef": "off"
+        }
+      }
     ]
   },
   "browserslist": {

@@ -1,3 +1,4 @@
+mod backend_api;
 mod document_editor;
 
 #[global_allocator]
