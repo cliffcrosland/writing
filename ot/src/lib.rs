@@ -473,6 +473,18 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
     Ok(composed)
 }
 
+/// Composes together a series of change sets.
+pub fn compose_iter<'a, I>(change_sets: I) -> Result<ChangeSet, OtError>
+where
+    I: IntoIterator<Item = &'a ChangeSet>,
+{
+    let mut composed = ChangeSet::new();
+    for change_set in change_sets.into_iter() {
+        composed = compose(&composed, &change_set)?;
+    }
+    Ok(composed)
+}
+
 /// Applies the change set to the document, returning a new document.
 ///
 /// You can think of a change set as a list of commands to send to an imaginary cursor. The cursor
@@ -1111,6 +1123,34 @@ mod tests {
         let composed_change_set = compose(&change_set_a, &change_set_b).unwrap();
         let expected = create_change_set(&["D:10", "I:Hello, world!"]);
         assert_eq!(composed_change_set, expected);
+    }
+
+    #[test]
+    fn test_compose_iter() {
+        let change_sets = vec![
+            create_change_set(&["I:hello"]),
+            create_change_set(&["R:5", "I:, world!"]),
+            create_change_set(&["D:1", "I:H", "R:12"]),
+        ];
+        let composed = compose_iter(&change_sets).unwrap();
+        assert_eq!(composed, create_change_set(&["I:Hello, world!"]));
+        let pairs = vec![
+            (1, create_change_set(&["I:hello"])),
+            (2, create_change_set(&["R:5", "I:, world!"])),
+            (3, create_change_set(&["D:1", "I:H", "R:12"])),
+        ];
+        let pairs_iter = pairs.iter().map(|pair| &pair.1);
+        let composed = compose_iter(pairs_iter).unwrap();
+        assert_eq!(composed, create_change_set(&["I:Hello, world!"]));
+        let change_sets = vec![
+            create_change_set(&["I:hello"]),
+            create_change_set(&["D:10"]),
+        ];
+        if let Err(OtError::InvalidInput(_)) = compose_iter(&change_sets) {
+            assert!(true);
+        } else {
+            assert!(false, "Expected invalid input error");
+        }
     }
 
     #[test]
