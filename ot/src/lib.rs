@@ -94,14 +94,14 @@ pub fn transform(
     remote_change_set: &ChangeSet,
     local_change_set: &ChangeSet,
 ) -> Result<ChangeSet, OtError> {
-    let (remote_len_before, remote_len_after) = get_input_output_doc_lengths(remote_change_set)?;
-    let (local_len_before, _) = get_input_output_doc_lengths(local_change_set)?;
+    let (remote_input_len, remote_output_len) = get_input_output_doc_lengths(remote_change_set)?;
+    let (local_input_len, _) = get_input_output_doc_lengths(local_change_set)?;
 
-    if remote_len_before != local_len_before {
+    if remote_input_len != local_input_len {
         return Err(OtError::InvalidInput(format!(
-            "Both the remote change set and the local change sets must be based on a document of \
-            the same length. Remote input document length: {}, Local input document length: {}",
-            remote_len_before, local_len_before
+            "The input length of the remote change ({}) was not the same as the input length of the \
+            local change ({})",
+            remote_input_len, local_input_len
         )));
     }
 
@@ -245,12 +245,12 @@ pub fn transform(
         r += 1;
     }
 
-    let (transformed_local_len_before, _) = get_input_output_doc_lengths(&transformed)?;
-    if transformed_local_len_before != remote_len_after {
+    let (transformed_local_input_len, _) = get_input_output_doc_lengths(&transformed)?;
+    if transformed_local_input_len != remote_output_len {
         return Err(OtError::PostConditionFailed(format!(
-            "The transformed local change set must be based on a document of length {}. Is based \
-            on a document of length {}",
-            remote_len_after, transformed_local_len_before
+            "The transformed local change's input length should be equal to the remote change's \
+            output length {}, but it was {}.",
+            remote_output_len, transformed_local_input_len
         )));
     }
 
@@ -473,7 +473,7 @@ pub fn compose(a_change_set: &ChangeSet, b_change_set: &ChangeSet) -> Result<Cha
     Ok(composed)
 }
 
-/// Composes together a series of change sets.
+/// Composes a series of change sets into a single change set.
 pub fn compose_iter<'a, I>(change_sets: I) -> Result<ChangeSet, OtError>
 where
     I: IntoIterator<Item = &'a ChangeSet>,
@@ -681,6 +681,256 @@ pub fn transform_selection(
         offset: new_selection_offset,
         count: new_selection_count,
     })
+}
+
+/// Transpose takes two arguments, a pair of changes `(A, inverse(A))`, and a change `B`, returning
+/// the pair `(transposed(A), inverse(transposed(A)))`. We can use `inverse(transposed(A))` to undo
+/// the changes contributed by `A`.
+///
+/// The transpose operation helps us undo local changes correctly after some remote changes have
+/// occurred.
+///
+/// # Background
+///
+/// Given a revision log `[..., A]`, undoing `A` can be accomplished by appending `inverse(A)` to
+/// the revision log, giving us: `[..., A, inverse(A)]`. This will undo all changes contributed by
+/// `A`.
+///
+/// However, if we have a revision log `[..., A, B]`, say where `A` is a local change but `B` is a
+/// remote change, we cannot simply append `inverse(A)` to the revision log. The document has
+/// changed since `A` occurred, so `inverse(A)` may undo changes made by `B`. It may not even be
+/// composable with `B`.
+///
+/// Transpose helps us modify `inverse(A)` so that it is composable with `B` and will only undo
+/// changes made by `A`. Roughly speaking, transposing `A` and `B` changes their order such that
+/// the revision log `[..., A, B]` is equal to the revision log `[..., transposed(B),
+/// transposed(A)]`. If we append `inverse(transposed(A))` to either revision log, we get the same
+/// composed document where we only undo the changes contributed by `A`.
+///
+/// The change `transposed(A)` is defined as follows. All characters:
+/// - Deleted in `A` are deleted in `transposed(A)`.
+/// - Inserted in `A` and not deleted in `B` are inserted in `transposed(A)`.
+/// - Retained in `A` and not deleted in `B` are retained in `transposed(A)`.
+/// - Inserted in `B` are retained in `transposed(A)`.
+/// - Retained in `B` are retained in `transposed(A)`.
+/// - Deleted in `B` are not retained in `transposed(A)`.
+///
+/// Returns `Err(OtError::InvalidInput)` in these cases:
+/// - `(A, inverse(A))` is not an inverse pair.
+/// - `A` is not composable with `B`.
+/// - `A` or `B` contain an invalid empty operation.
+pub fn transpose(
+    a_change_set_inverse_pair: &(ChangeSet, ChangeSet),
+    b_change_set: &ChangeSet,
+) -> Result<(ChangeSet, ChangeSet), OtError> {
+    let (a_do, a_undo) = (&a_change_set_inverse_pair.0, &a_change_set_inverse_pair.1);
+    if !is_inverse_pair(a_do, a_undo) {
+        return Err(OtError::InvalidInput(String::from(
+            "The changes in the inverse pair are not inverses of one another.",
+        )));
+    }
+    let (_, a_output_len) = get_input_output_doc_lengths(a_do)?;
+    let (b_input_len, _) = get_input_output_doc_lengths(b_change_set)?;
+    if a_output_len != b_input_len {
+        return Err(OtError::InvalidInput(format!(
+            "A's output length {} is not equal to B's input length {}",
+            a_output_len, b_input_len
+        )));
+    }
+    let unexpected_empty_op_error =
+        |name: &str| OtError::InvalidInput(format!("change set {} contained an empty op", name));
+    let mut transposed_a_do = ChangeSet::new();
+    let mut transposed_a_undo = ChangeSet::new();
+    let mut a_offset = 0;
+    let mut b = 0;
+    let mut b_offset = 0;
+    // For each operation in A, find all overlapping operations in B.
+    for a in 0..a_do.ops.len() {
+        let a_op = &a_do.ops[a]
+            .op
+            .as_ref()
+            .ok_or_else(|| unexpected_empty_op_error("A"))?;
+        match a_op {
+            // - Any delete operations in A will be present in transposed(A).
+            Op::Delete(a_delete) => {
+                transposed_a_do.delete(a_delete.count);
+                if let Some(Op::Insert(a_undo_insert)) = a_undo.ops[a].op.as_ref() {
+                    transposed_a_undo.insert_slice(&a_undo_insert.content);
+                } else {
+                    // We already verified that (A, inverse(A)) was a valid inverse pair. This branch
+                    // should be unreachable.
+                    unreachable!();
+                }
+            }
+            Op::Retain(a_retain) => {
+                let (a_op_start, a_op_end) = (a_offset, a_offset + a_retain.count);
+                while b < b_change_set.ops.len() {
+                    let b_change_op = &b_change_set.ops[b];
+                    let b_op = b_change_op
+                        .op
+                        .as_ref()
+                        .ok_or_else(|| unexpected_empty_op_error("B"))?;
+                    match b_op {
+                        // - Any characters inserted in B will be retained in transposed(A).
+                        Op::Insert(b_insert) => {
+                            let content_len = b_insert.content.len() as i64;
+                            transposed_a_do.retain(content_len);
+                            transposed_a_undo.retain(content_len);
+                            b += 1;
+                        }
+                        // - Any characters retained in both A and B will be retained in
+                        //   transposed(A).
+                        Op::Retain(b_retain) => {
+                            let (b_op_start, b_op_end) = (b_offset, b_offset + b_retain.count);
+                            let overlap_len =
+                                get_overlap_len((a_op_start, a_op_end), (b_op_start, b_op_end));
+                            transposed_a_do.retain(overlap_len);
+                            transposed_a_undo.retain(overlap_len);
+                            if b_op_end > a_op_end {
+                                break;
+                            } else {
+                                b_offset += b_retain.count;
+                                b += 1;
+                            }
+                        }
+                        // - Any characters retained in A but deleted in B will *not* be retained
+                        //   in transposed(A).
+                        Op::Delete(b_delete) => {
+                            let b_op_end = b_offset + b_delete.count;
+                            if b_op_end > a_op_end {
+                                break;
+                            } else {
+                                b_offset += b_delete.count;
+                                b += 1;
+                            }
+                        }
+                    }
+                }
+                a_offset += a_retain.count;
+            }
+            Op::Insert(a_insert) => {
+                let (a_op_start, a_op_end) = (a_offset, a_offset + a_insert.content.len() as i64);
+                let mut a_insert_offset: i64 = 0;
+                while b < b_change_set.ops.len() {
+                    let b_change_op = &b_change_set.ops[b];
+                    let b_op = b_change_op
+                        .op
+                        .as_ref()
+                        .ok_or_else(|| unexpected_empty_op_error("B"))?;
+                    match b_op {
+                        // - Any characters inserted in B will be retained in transposed(A).
+                        Op::Insert(b_insert) => {
+                            let content_len = b_insert.content.len() as i64;
+                            transposed_a_do.retain(content_len);
+                            transposed_a_undo.retain(content_len);
+                            b += 1;
+                        }
+                        // - Any characters inserted in A and retained in B will be inserted in transposed(A).
+                        Op::Retain(b_retain) => {
+                            let (b_op_start, b_op_end) = (b_offset, b_offset + b_retain.count);
+                            let overlap_len =
+                                get_overlap_len((a_op_start, a_op_end), (b_op_start, b_op_end));
+                            if overlap_len > 0 {
+                                let range = a_insert_offset as usize
+                                    ..(a_insert_offset + overlap_len) as usize;
+                                transposed_a_do.insert_slice(&a_insert.content[range]);
+                                transposed_a_undo.delete(overlap_len);
+                                a_insert_offset += overlap_len;
+                            }
+                            if b_op_end > a_op_end {
+                                break;
+                            } else {
+                                b_offset += b_retain.count;
+                                b += 1;
+                            }
+                        }
+                        // - Any characters inserted in A and deleted in B will *not* be inserted in transposed(A).
+                        Op::Delete(b_delete) => {
+                            let (b_op_start, b_op_end) = (b_offset, b_offset + b_delete.count);
+                            let overlap_len =
+                                get_overlap_len((a_op_start, a_op_end), (b_op_start, b_op_end));
+                            a_insert_offset += overlap_len; // Skip over this part of A's insertion.
+                            if b_op_end > a_op_end {
+                                break;
+                            } else {
+                                b_offset += b_delete.count;
+                                b += 1;
+                            }
+                        }
+                    }
+                }
+                a_offset += a_insert.content.len() as i64;
+            }
+        }
+    }
+    // Any operations that remain in B must be Inserts. These become Retains in the transposed output.
+    while b < b_change_set.ops.len() {
+        let b_change_op = &b_change_set.ops[b];
+        let b_op = b_change_op
+            .op
+            .as_ref()
+            .ok_or_else(|| unexpected_empty_op_error("B"))?;
+        if let Op::Insert(b_insert) = b_op {
+            let char_count = b_insert.content.len() as i64;
+            transposed_a_do.retain(char_count);
+            transposed_a_undo.retain(char_count);
+        } else {
+            return Err(OtError::PostConditionFailed(String::from(
+                "Expected all remaining operations in B to be inserts.",
+            )));
+        }
+        b += 1;
+    }
+    Ok((transposed_a_do, transposed_a_undo))
+}
+
+/// Returns true if and only if the changes are inverses of one another.
+///
+/// `A` and `B` are inverses of one another if and only if:
+/// 1. They have the same number of operations.
+/// 2. When `A[i]` is a Retain, `B[i]` is an identical Retain, and vice-versa.
+/// 3. When `A[i]` is an Insert with length `K`, `B[i]` is a Delete with count `K`, and vice-versa.
+/// 4. When `A[i]` is a Delete with count `K`, `B[i]` is an Insert with length `K`, and vice-versa.
+pub fn is_inverse_pair(a: &ChangeSet, b: &ChangeSet) -> bool {
+    if a.ops.len() != b.ops.len() {
+        return false;
+    }
+    for i in 0..a.ops.len() {
+        let op_a = &a.ops[i].op;
+        let op_b = &b.ops[i].op;
+        if op_a.is_none() || op_b.is_none() {
+            return false;
+        }
+        let op_a = op_a.as_ref().unwrap();
+        let op_b = op_b.as_ref().unwrap();
+        match op_a {
+            Op::Retain(retain_a) => match op_b {
+                Op::Retain(retain_b) if retain_a.count == retain_b.count => {
+                    continue;
+                }
+                _ => {
+                    return false;
+                }
+            },
+            Op::Insert(insert_a) => match op_b {
+                Op::Delete(delete_b) if insert_a.content.len() as i64 == delete_b.count => {
+                    continue;
+                }
+                _ => {
+                    return false;
+                }
+            },
+            Op::Delete(delete_a) => match op_b {
+                Op::Insert(insert_b) if delete_a.count == insert_b.content.len() as i64 => {
+                    continue;
+                }
+                _ => {
+                    return false;
+                }
+            },
+        }
+    }
+    true
 }
 
 impl ChangeSet {
@@ -1325,5 +1575,40 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // TODO(cliff): Write exhaustive compose tests
+    #[test]
+    fn test_is_inverse_pair() {
+        let do_change = create_change_set(&["R:10", "I:Hello", "R:5", "D:6", "R:7"]);
+        let undo_change = create_change_set(&["R:10", "D:5", "R:5", "I:amigos", "R:7"]);
+        assert!(is_inverse_pair(&do_change, &undo_change));
+
+        let undo_wrong_ops_length = create_change_set(&["R:10"]);
+        let undo_insert_mismatch = create_change_set(&["R:10", "D:5", "R:5", "I:amigo", "R:7"]);
+        let undo_retain_mismatch = create_change_set(&["R:10", "D:5", "R:5", "I:amigos", "D:7"]);
+        let undo_delete_mismatch = create_change_set(&["R:10", "D:3", "R:5", "I:amigos", "R:7"]);
+        assert!(!is_inverse_pair(&do_change, &undo_wrong_ops_length));
+        assert!(!is_inverse_pair(&do_change, &undo_insert_mismatch));
+        assert!(!is_inverse_pair(&do_change, &undo_retain_mismatch));
+        assert!(!is_inverse_pair(&do_change, &undo_delete_mismatch));
+    }
+
+    #[test]
+    fn test_transpose() {
+        let a_do = create_change_set(&["R:10", "I:Hello", "R:5", "D:6", "R:7"]);
+        let a_undo = create_change_set(&["R:10", "D:5", "R:5", "I:amigos", "R:7"]);
+        let a_change_set_inverse_pair = (a_do, a_undo);
+        let b_change_set = create_change_set(&["R:10", "D:1", "I:h", "R:5", "D:7", "R:4"]);
+
+        let result = transpose(&a_change_set_inverse_pair, &b_change_set);
+        assert!(result.is_ok());
+        let (transposed_a_do, transposed_a_undo) = result.unwrap();
+
+        let expected_transposed_a_do = create_change_set(&["R:11", "I:ello", "R:1", "D:6", "R:4"]);
+        assert_eq!(transposed_a_do, expected_transposed_a_do);
+        let expected_transposed_a_undo =
+            create_change_set(&["R:11", "D:4", "R:1", "I:amigos", "R:4"]);
+        assert_eq!(transposed_a_undo, expected_transposed_a_undo);
+
+        // TODO(cliff): Add more cases? Maybe test that characters retained in B are always
+        // retained in A?
+    }
 }
