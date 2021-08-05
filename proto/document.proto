@@ -22,6 +22,7 @@ enum DocumentSharingPermission {
 
 message DocumentRevision {
   string doc_id = 1;
+  string author_user_id = 5;
   int64 revision_number = 2;
   ChangeSet change_set = 3;
   string committed_at = 4;

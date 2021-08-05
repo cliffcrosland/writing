@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 prost = "0.6"
+thiserror = "1.0"
 tonic = { version = "0.3", default-features = false, features = ["codegen", "prost"] }
 
 [build-dependencies]

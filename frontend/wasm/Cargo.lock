@@ -256,6 +256,7 @@ name = "ot"
 version = "0.1.0"
 dependencies = [
  "prost",
+ "thiserror",
  "tonic",
  "tonic-build",
 ]
@@ -510,6 +511,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "thiserror"
+version = "1.0.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93119e4feac1cbe6c798c34d3a53ea0026b0b1de6a120deef895137c0529bfe2"
+dependencies = [
+ "thiserror-impl",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "060d69a0afe7796bf42e9e2ff91f5ee691fb15c53d38b4b62a9a53eb23164745"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "tokio"
 version = "0.2.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -640,11 +661,13 @@ checksum = "fd6fbd9a79829dd1ad0cc20627bf1ed606756a7f77edff7b66b7064f9cb327c6"
 name = "wasm"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "js-sys",
  "log",
  "ot",
  "prost",
  "serde",
+ "thiserror",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-logger",

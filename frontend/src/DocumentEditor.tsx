@@ -6,17 +6,17 @@ const VERBOSE_LOGGING = false;
 const Z_KEY_CODE = 90;
 
 function DocumentEditor(props: any) {
-  const { InputEventParams, DocumentEditorModel, Selection } = importWasm();
+  const { InputEventParams, DocumentEditorModel, JsSelection } = importWasm();
 
   const textAreaElem: any = useRef(null);
   const [documentEditorModel, _] = useState(() => {
     return DocumentEditorModel.new(props.orgId, props.docId, props.userId);
   });
-  const [debugSelection, setDebugSelection] = useState(Selection.new(0, 0));
-  const [debugRevisions, setDebugRevisions] = useState(new Array<string>());
+  const [debugSelection, setDebugSelection] = useState(JsSelection.new(0, 0));
+  const [debugLines, setDebugLines] = useState(new Array<string>());
   
   function captureSelection(event: any) {
-    const newSelection = Selection.new(
+    const newSelection = JsSelection.new(
       event.target.selectionStart, 
       event.target.selectionEnd
     );
@@ -27,12 +27,13 @@ function DocumentEditor(props: any) {
   function onKeyDown(event: any) {
     captureSelection(event);
 
-    const isUndoOrRedo = (event.keyCode == Z_KEY_CODE && event.ctrlKey)
+    const isUndoOrRedo = (event.keyCode == Z_KEY_CODE && event.ctrlKey);
     if (!isUndoOrRedo) return;
+    event.preventDefault();
     const inputType = event.shiftKey ? 'historyRedo' : 'historyUndo';
     const inputEventParams = InputEventParams.new(
       inputType, null, null,
-      Selection.new(event.target.selectionStart, event.target.selectionEnd)
+      JsSelection.new(event.target.selectionStart, event.target.selectionEnd)
     );
     updateFromInputEvent(inputEventParams);
   }
@@ -58,7 +59,7 @@ function DocumentEditor(props: any) {
       event.nativeEvent.inputType,
       event.nativeEvent.data,
       event.target.value,
-      Selection.new(event.target.selectionStart, event.target.selectionEnd)
+      JsSelection.new(event.target.selectionStart, event.target.selectionEnd)
     );
 
     updateFromInputEvent(inputEventParams);
@@ -67,12 +68,20 @@ function DocumentEditor(props: any) {
   function updateFromInputEvent(inputEventParams: any) {
     documentEditorModel.updateFromInputEvent(inputEventParams);
 
-    textAreaElem.current.value = documentEditorModel.getValue();
+    let startedAt: any = null;
+    if (VERBOSE_LOGGING) {
+      startedAt = performance.now();
+    }
+    textAreaElem.current.value = documentEditorModel.computeValue();
+    if (VERBOSE_LOGGING) {
+      const timeElapsed = performance.now() - startedAt;
+      console.log(`Time elapsed: documentEditorModel.computeValue(): ${timeElapsed} ms`);
+    }
     const selection = documentEditorModel.getSelection();
     textAreaElem.current.selectionStart = selection.start;
     textAreaElem.current.selectionEnd = selection.end;
     setDebugSelection(selection);
-    setDebugRevisions(documentEditorModel.getDebugRevisions());
+    setDebugLines(documentEditorModel.getDebugLines());
   }
 
   async function submitNextRevision() {
@@ -81,7 +90,7 @@ function DocumentEditor(props: any) {
     } catch (e) {
       console.error("Error submitting next revision:", e);
     }
-    setDebugRevisions(documentEditorModel.getDebugRevisions());
+    setDebugLines(documentEditorModel.getDebugLines());
   }
 
   return (
@@ -105,8 +114,8 @@ function DocumentEditor(props: any) {
             </div>
           </div>
           <ul className="DocumentEditor-revisionsList">
-            {debugRevisions.map((revision, i) =>
-              <li key={i}>{revision}</li>
+            {debugLines.map((line, i) =>
+              <li key={i}>{line}</li>
             )}
           </ul>
         </div>
