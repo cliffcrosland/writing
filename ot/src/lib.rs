@@ -79,11 +79,14 @@ pub fn transform(a: &ChangeSet, b: &ChangeSet) -> Result<(ChangeSet, ChangeSet),
     let mut a_ops_iter = a.ops.iter();
     let mut b_ops_iter = b.ops.iter();
 
+    let mut temp_a_op: Option<Op>;
+    let mut temp_b_op: Option<Op>;
+
     let mut maybe_a_op = next_op(&mut a_ops_iter)?;
     let mut maybe_b_op = next_op(&mut b_ops_iter)?;
 
     loop {
-        match (maybe_a_op.as_ref(), maybe_b_op.as_ref()) {
+        match (maybe_a_op, maybe_b_op) {
             (None, None) => break,
             (Some(Op::Insert(insert)), _) => {
                 // A' must insert whatever new characters A inserted.
@@ -106,13 +109,15 @@ pub fn transform(a: &ChangeSet, b: &ChangeSet) -> Result<(ChangeSet, ChangeSet),
                     Ordering::Less => {
                         a_transform.retain(a_retain.count);
                         b_transform.retain(a_retain.count);
-                        maybe_b_op = Some(retain_op(b_retain.count - a_retain.count));
+                        temp_b_op = Some(retain_op(b_retain.count - a_retain.count));
+                        maybe_b_op = temp_b_op.as_ref();
                         maybe_a_op = next_op(&mut a_ops_iter)?;
                     }
                     Ordering::Greater => {
                         a_transform.retain(b_retain.count);
                         b_transform.retain(b_retain.count);
-                        maybe_a_op = Some(retain_op(a_retain.count - b_retain.count));
+                        temp_a_op = Some(retain_op(a_retain.count - b_retain.count));
+                        maybe_a_op = temp_a_op.as_ref();
                         maybe_b_op = next_op(&mut b_ops_iter)?;
                     }
                     Ordering::Equal => {
@@ -128,11 +133,13 @@ pub fn transform(a: &ChangeSet, b: &ChangeSet) -> Result<(ChangeSet, ChangeSet),
                 // to A' or B' (since A' follows B, and B' follows A).
                 match a_delete.count.cmp(&b_delete.count) {
                     Ordering::Less => {
-                        maybe_b_op = Some(delete_op(b_delete.count - a_delete.count));
+                        temp_b_op = Some(delete_op(b_delete.count - a_delete.count));
+                        maybe_b_op = temp_b_op.as_ref();
                         maybe_a_op = next_op(&mut a_ops_iter)?;
                     }
                     Ordering::Greater => {
-                        maybe_a_op = Some(delete_op(a_delete.count - b_delete.count));
+                        temp_a_op = Some(delete_op(a_delete.count - b_delete.count));
+                        maybe_a_op = temp_a_op.as_ref();
                         maybe_b_op = next_op(&mut b_ops_iter)?;
                     }
                     Ordering::Equal => {
@@ -147,12 +154,14 @@ pub fn transform(a: &ChangeSet, b: &ChangeSet) -> Result<(ChangeSet, ChangeSet),
                 match a_delete.count.cmp(&b_retain.count) {
                     Ordering::Less => {
                         a_transform.delete(a_delete.count);
-                        maybe_b_op = Some(retain_op(b_retain.count - a_delete.count));
+                        temp_b_op = Some(retain_op(b_retain.count - a_delete.count));
+                        maybe_b_op = temp_b_op.as_ref();
                         maybe_a_op = next_op(&mut a_ops_iter)?;
                     }
                     Ordering::Greater => {
                         a_transform.delete(b_retain.count);
-                        maybe_a_op = Some(delete_op(a_delete.count - b_retain.count));
+                        temp_a_op = Some(delete_op(a_delete.count - b_retain.count));
+                        maybe_a_op = temp_a_op.as_ref();
                         maybe_b_op = next_op(&mut b_ops_iter)?;
                     }
                     Ordering::Equal => {
@@ -168,12 +177,14 @@ pub fn transform(a: &ChangeSet, b: &ChangeSet) -> Result<(ChangeSet, ChangeSet),
                 match a_retain.count.cmp(&b_delete.count) {
                     Ordering::Less => {
                         b_transform.delete(a_retain.count);
-                        maybe_b_op = Some(delete_op(b_delete.count - a_retain.count));
+                        temp_b_op = Some(delete_op(b_delete.count - a_retain.count));
+                        maybe_b_op = temp_b_op.as_ref();
                         maybe_a_op = next_op(&mut a_ops_iter)?;
                     }
                     Ordering::Greater => {
                         b_transform.delete(b_delete.count);
-                        maybe_a_op = Some(retain_op(a_retain.count - b_delete.count));
+                        temp_a_op = Some(retain_op(a_retain.count - b_delete.count));
+                        maybe_a_op = temp_a_op.as_ref();
                         maybe_b_op = next_op(&mut b_ops_iter)?;
                     }
                     Ordering::Equal => {
@@ -224,6 +235,9 @@ pub fn compose(a: &ChangeSet, b: &ChangeSet) -> Result<ChangeSet, OtError> {
     let mut a_ops_iter = a.ops.iter();
     let mut b_ops_iter = b.ops.iter();
 
+    let mut temp_a_op: Option<Op>;
+    let mut temp_b_op: Option<Op>;
+
     let mut maybe_a_op = next_op(&mut a_ops_iter)?;
     let mut maybe_b_op = next_op(&mut b_ops_iter)?;
 
@@ -245,12 +259,14 @@ pub fn compose(a: &ChangeSet, b: &ChangeSet) -> Result<ChangeSet, OtError> {
                 match a_retain.count.cmp(&b_retain.count) {
                     Ordering::Less => {
                         composed.retain(a_retain.count);
-                        maybe_b_op = Some(retain_op(b_retain.count - a_retain.count));
+                        temp_b_op = Some(retain_op(b_retain.count - a_retain.count));
+                        maybe_b_op = temp_b_op.as_ref();
                         maybe_a_op = next_op(&mut a_ops_iter)?;
                     }
                     Ordering::Greater => {
                         composed.retain(b_retain.count);
-                        maybe_a_op = Some(retain_op(a_retain.count - b_retain.count));
+                        temp_a_op = Some(retain_op(a_retain.count - b_retain.count));
+                        maybe_a_op = temp_a_op.as_ref();
                         maybe_b_op = next_op(&mut b_ops_iter)?;
                     }
                     Ordering::Equal => {
@@ -269,10 +285,12 @@ pub fn compose(a: &ChangeSet, b: &ChangeSet) -> Result<ChangeSet, OtError> {
                 match a_insert_content_len.cmp(&b_delete.count) {
                     Ordering::Less => {
                         maybe_a_op = next_op(&mut a_ops_iter)?;
-                        maybe_b_op = Some(delete_op(b_delete.count - a_insert_content_len));
+                        temp_b_op = Some(delete_op(b_delete.count - a_insert_content_len));
+                        maybe_b_op = temp_b_op.as_ref();
                     }
                     Ordering::Greater => {
-                        maybe_a_op = Some(insert_op(&a_insert.content[b_delete.count as usize..]));
+                        temp_a_op = Some(insert_op(&a_insert.content[b_delete.count as usize..]));
+                        maybe_a_op = temp_a_op.as_ref();
                         maybe_b_op = next_op(&mut b_ops_iter)?;
                     }
                     Ordering::Equal => {
@@ -288,11 +306,13 @@ pub fn compose(a: &ChangeSet, b: &ChangeSet) -> Result<ChangeSet, OtError> {
                     Ordering::Less => {
                         composed.insert_slice(&a_insert.content);
                         maybe_a_op = next_op(&mut a_ops_iter)?;
-                        maybe_b_op = Some(retain_op(b_retain.count - a_insert_content_len));
+                        temp_b_op = Some(retain_op(b_retain.count - a_insert_content_len));
+                        maybe_b_op = temp_b_op.as_ref();
                     }
                     Ordering::Greater => {
                         composed.insert_slice(&a_insert.content[0..b_retain.count as usize]);
-                        maybe_a_op = Some(insert_op(&a_insert.content[b_retain.count as usize..]));
+                        temp_a_op = Some(insert_op(&a_insert.content[b_retain.count as usize..]));
+                        maybe_a_op = temp_a_op.as_ref();
                         maybe_b_op = next_op(&mut b_ops_iter)?;
                     }
                     Ordering::Equal => {
@@ -307,12 +327,14 @@ pub fn compose(a: &ChangeSet, b: &ChangeSet) -> Result<ChangeSet, OtError> {
                 match a_retain.count.cmp(&b_delete.count) {
                     Ordering::Less => {
                         composed.delete(a_retain.count);
-                        maybe_b_op = Some(delete_op(b_delete.count - a_retain.count));
+                        temp_b_op = Some(delete_op(b_delete.count - a_retain.count));
+                        maybe_b_op = temp_b_op.as_ref();
                         maybe_a_op = next_op(&mut a_ops_iter)?;
                     }
                     Ordering::Greater => {
                         composed.delete(b_delete.count);
-                        maybe_a_op = Some(retain_op(a_retain.count - b_delete.count));
+                        temp_a_op = Some(retain_op(a_retain.count - b_delete.count));
+                        maybe_a_op = temp_a_op.as_ref();
                         maybe_b_op = next_op(&mut b_ops_iter)?;
                     }
                     Ordering::Equal => {
@@ -421,6 +443,102 @@ pub fn apply_slice(document_u16: &[u16], change_set: &ChangeSet) -> Result<Vec<u
         )));
     }
     Ok(new_document_u16)
+}
+
+/// Applies the change set to the given document, which is comprised of a list of chunks. Returns a
+/// new list of chunks.
+pub fn apply_chunks(
+    document_chunks: Vec<Vec<u16>>,
+    change_set: &ChangeSet,
+) -> Result<Vec<Vec<u16>>, OtError> {
+    let (input_len, output_len) = get_input_output_doc_lengths(change_set)?;
+    let doc_len: usize = document_chunks
+        .iter()
+        .fold(0, |sum, chunk| sum + chunk.len());
+    if input_len as usize != doc_len {
+        return Err(OtError::InvalidInput(format!(
+            "The change set must be based on a document with length {}, but the document had length {}",
+            input_len, doc_len,
+        )));
+    }
+
+    let mut new_document_chunks: Vec<Vec<u16>> = Vec::new();
+
+    let mut chunks_iter = document_chunks.into_iter();
+    let mut ops_iter = change_set.ops.iter();
+
+    let mut temp_op: Option<Op>;
+
+    let mut maybe_chunk = chunks_iter.next();
+    let mut maybe_op = next_op(&mut ops_iter)?;
+
+    loop {
+        match (maybe_chunk, maybe_op) {
+            (None, None) => break,
+            (Some(chunk), Some(Op::Insert(insert))) => {
+                let content: Vec<u16> = insert.content.iter().map(|ch| *ch as u16).collect();
+                new_document_chunks.push(content);
+                maybe_chunk = Some(chunk);
+                maybe_op = next_op(&mut ops_iter)?;
+            }
+            (Some(mut chunk), Some(Op::Retain(retain))) => {
+                let chunk_len = chunk.len();
+                let retain_count = retain.count as usize;
+                match chunk_len.cmp(&retain_count) {
+                    Ordering::Less => {
+                        new_document_chunks.push(chunk);
+                        temp_op = Some(retain_op(retain_count as i64 - chunk_len as i64));
+                        maybe_chunk = chunks_iter.next();
+                        maybe_op = temp_op.as_ref();
+                    }
+                    Ordering::Greater => {
+                        maybe_chunk = Some(chunk.split_off(retain_count));
+                        new_document_chunks.push(chunk);
+                        maybe_op = next_op(&mut ops_iter)?;
+                    }
+                    Ordering::Equal => {
+                        new_document_chunks.push(chunk);
+                        maybe_chunk = chunks_iter.next();
+                        maybe_op = next_op(&mut ops_iter)?;
+                    }
+                }
+            }
+            (Some(mut chunk), Some(Op::Delete(delete))) => {
+                let chunk_len = chunk.len();
+                let delete_count = delete.count as usize;
+                match chunk_len.cmp(&delete_count) {
+                    Ordering::Less => {
+                        temp_op = Some(delete_op(delete_count as i64 - chunk_len as i64));
+                        maybe_chunk = chunks_iter.next();
+                        maybe_op = temp_op.as_ref();
+                    }
+                    Ordering::Greater => {
+                        maybe_chunk = Some(chunk.split_off(delete_count));
+                        maybe_op = next_op(&mut ops_iter)?;
+                    }
+                    Ordering::Equal => {
+                        maybe_chunk = chunks_iter.next();
+                        maybe_op = next_op(&mut ops_iter)?;
+                    }
+                }
+            }
+            (None, _) | (_, None) => {
+                return Err(OtError::InvalidInput(String::from(
+                    "Mismatched document chunks and change set ops",
+                )));
+            }
+        }
+    }
+    let new_doc_len: usize = new_document_chunks
+        .iter()
+        .fold(0, |sum, chunk| sum + chunk.len());
+    if output_len as usize != new_doc_len {
+        return Err(OtError::PostConditionFailed(format!(
+            "After applying changes, the document should have length {}, but it had length {}",
+            output_len, new_doc_len,
+        )));
+    }
+    Ok(new_document_chunks)
 }
 
 /// Inverts the given `ChangeSet`, turning `Insert` operations into `Delete` operations, and
@@ -544,7 +662,7 @@ pub fn transform_selection(
     })
 }
 
-fn next_op(iter: &mut dyn Iterator<Item = &ChangeOp>) -> Result<Option<Op>, OtError> {
+fn next_op<'a>(iter: &mut dyn Iterator<Item = &'a ChangeOp>) -> Result<Option<&'a Op>, OtError> {
     match iter.next() {
         None => Ok(None),
         Some(change_op) => {
@@ -552,7 +670,7 @@ fn next_op(iter: &mut dyn Iterator<Item = &ChangeOp>) -> Result<Option<Op>, OtEr
                 .op
                 .as_ref()
                 .ok_or_else(|| OtError::InvalidInput("Empty op encountered".to_string()))?;
-            Ok(Some(op.clone()))
+            Ok(Some(op))
         }
     }
 }
@@ -807,6 +925,14 @@ mod tests {
         ChangeSet { ops }
     }
 
+    fn string_to_vec_u16(string: &str) -> Vec<u16> {
+        string.to_string().chars().map(|ch| ch as u16).collect()
+    }
+
+    fn slice_u16_to_string(slice_u16: &[u16]) -> String {
+        slice_u16.iter().map(|ch| (*ch as u8) as char).collect()
+    }
+
     #[test]
     fn test_get_input_output_doc_lengths() {
         let change_set = create_change_set(&["R:3", "I:Hello", "D:2", "R:6"]);
@@ -1038,6 +1164,33 @@ mod tests {
                 panic!("Unexpected result: {:?}", result);
             }
         }
+    }
+
+    #[test]
+    fn test_apply_chunks() {
+        let document = "AAABBCCCC";
+        let document_vec: Vec<u16> = string_to_vec_u16(&document);
+        let change_set = create_change_set(&["R:2", "D:2", "I:DDD", "R:3", "I:E", "R:2"]);
+        let new_document_vec = apply_slice(&document_vec, &change_set).unwrap();
+        let new_document = slice_u16_to_string(&new_document_vec);
+        let expected_new_document = "AADDDBCCECC";
+        assert_eq!(new_document, expected_new_document);
+
+        let document_chunks = vec![
+            string_to_vec_u16("AAA"),
+            string_to_vec_u16("BB"),
+            string_to_vec_u16("CCCC"),
+        ];
+        let new_document_chunks = apply_chunks(document_chunks, &change_set).unwrap();
+        let expected_new_document_chunks = vec![
+            string_to_vec_u16("AA"),
+            string_to_vec_u16("DDD"),
+            string_to_vec_u16("B"),
+            string_to_vec_u16("CC"),
+            string_to_vec_u16("E"),
+            string_to_vec_u16("CC"),
+        ];
+        assert_eq!(new_document_chunks, expected_new_document_chunks);
     }
 
     #[test]
