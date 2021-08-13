@@ -48,12 +48,14 @@ struct DocumentEditorModelInner {
     undo_manager: UndoManager,
     current_change: Option<CurrentChange>,
     current_selection: Selection,
+    current_value: Vec<u16>,
     sync_running: bool,
 }
 
 struct CurrentChange {
     change_set: ChangeSet,
     prior_selection: Selection,
+    prior_value: Vec<u16>,
     editable_until: f64,
 }
 
@@ -62,6 +64,7 @@ impl CurrentChange {
         let (transformed_change_set, transformed_remote) = ot::transform(&self.change_set, remote)?;
         self.change_set = transformed_change_set;
         self.prior_selection = ot::transform_selection(&self.prior_selection, &remote)?;
+        self.prior_value = ot::apply_slice(&self.prior_value, &remote)?;
         Ok(transformed_remote)
     }
 }
@@ -79,6 +82,7 @@ impl DocumentEditorModel {
                 undo_manager: UndoManager::new(),
                 current_change: None,
                 current_selection: Selection::default(),
+                current_value: Vec::new(),
                 sync_running: false,
             })),
         }
@@ -111,10 +115,18 @@ impl DocumentEditorModel {
         inner.current_selection = selection.into();
     }
 
-    #[wasm_bindgen(js_name = computeValue)]
-    pub fn compute_value(&self) -> JsString {
+    #[wasm_bindgen(js_name = getValue)]
+    pub fn get_value(&self) -> JsString {
         let inner = self.inner.lock().unwrap();
-        JsString::from_char_code(&inner.compute_value())
+        if inner.current_value.len() < (1usize << 16) {
+            JsString::from_char_code(&inner.current_value)
+        } else {
+            let mut ret = JsString::from("");
+            for chunk in inner.current_value.chunks(1usize << 16) {
+                ret = ret.concat(&JsString::from_char_code(chunk));
+            }
+            ret
+        }
     }
 
     #[wasm_bindgen(js_name = isSyncRunning)]
@@ -243,39 +255,8 @@ impl DocumentEditorModelInner {
         Ok(())
     }
 
-    pub fn compute_value(&self) -> Vec<u16> {
-        // TODO(cliff): Do something smarter than replaying all changes :)
-        let committed_composed = self
-            .committed_log
-            .compose_range(0..self.committed_log.len())
-            .unwrap();
-        let pending_composed = self
-            .pending_log
-            .compose_range(0..self.pending_log.len())
-            .unwrap();
-        let mut composed =
-            Self::compose(committed_composed.as_ref(), pending_composed.as_ref()).unwrap();
-        if let Some(current_change) = self.current_change.as_ref() {
-            composed = Self::compose(composed.as_ref(), Some(&current_change.change_set)).unwrap();
-        }
-        if let Some(composed) = composed {
-            ot::apply_slice(&[], &composed).unwrap()
-        } else {
-            vec![]
-        }
-    }
-
     pub fn is_sync_running(&self) -> bool {
         self.sync_running
-    }
-
-    fn compose(a: Option<&ChangeSet>, b: Option<&ChangeSet>) -> Result<Option<ChangeSet>, OtError> {
-        match (a, b) {
-            (None, None) => Ok(None),
-            (Some(a), None) => Ok(Some(a.clone())),
-            (None, Some(b)) => Ok(Some(b.clone())),
-            (Some(a), Some(b)) => Ok(Some(ot::compose(a, b)?)),
-        }
     }
 
     pub fn update_from_input_event(&mut self, input_event: InputEventParams) -> anyhow::Result<()> {
@@ -311,9 +292,8 @@ impl DocumentEditorModelInner {
             }
         };
 
-        let value = self.compute_value();
         let new_undo_item = UndoItem {
-            change_set: ot::invert_slice(&value, &undo_item.change_set)?,
+            change_set: ot::invert_slice(&self.current_value, &undo_item.change_set)?,
             selection_after: self.current_selection.clone(),
         };
         self.pending_log.push_back(&undo_item.change_set);
@@ -321,16 +301,16 @@ impl DocumentEditorModelInner {
             UndoType::Undo => self.undo_manager.push(UndoType::Redo, new_undo_item),
             UndoType::Redo => self.undo_manager.push(UndoType::Undo, new_undo_item),
         }
+        self.current_value = ot::apply_slice(&self.current_value, &undo_item.change_set)?;
         self.current_selection = undo_item.selection_after;
 
         Ok(())
     }
 
     pub fn process_edit_command(&mut self, input_event: &InputEventParams) -> anyhow::Result<()> {
-        let value = self.compute_value();
         let (change_set, mut should_start_new_revision) = compute_change_set_from_input_event(
             &self.current_selection.clone().into(),
-            &value,
+            &self.current_value,
             input_event,
         )?;
         if let Some(current_change) = self.current_change.as_ref() {
@@ -343,14 +323,16 @@ impl DocumentEditorModelInner {
         }
         if self.current_change.is_none() {
             self.current_change = Some(CurrentChange {
-                change_set,
+                change_set: change_set.clone(),
                 prior_selection: self.current_selection.clone(),
+                prior_value: self.current_value.clone(),
                 editable_until: Date::now() + MAX_CURRENT_CHANGE_EDITABLE_TIME,
             });
         } else {
             let mut current_change = self.current_change.as_mut().unwrap();
             current_change.change_set = ot::compose(&current_change.change_set, &change_set)?;
         }
+        self.current_value = ot::apply_slice(&self.current_value, &change_set)?;
         self.current_selection = input_event.selection.into();
         Ok(())
     }
@@ -365,9 +347,8 @@ impl DocumentEditorModelInner {
                 return Ok(());
             }
         };
-        let value = self.compute_value();
         let undo_item = UndoItem {
-            change_set: ot::invert_slice(&value[..], &current_change.change_set)?,
+            change_set: ot::invert_slice(&current_change.prior_value, &current_change.change_set)?,
             selection_after: current_change.prior_selection.clone(),
         };
         self.pending_log.push_back(&current_change.change_set);

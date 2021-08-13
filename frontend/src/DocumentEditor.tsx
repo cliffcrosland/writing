@@ -2,7 +2,8 @@ import React, { useRef, useState } from 'react';
 import './DocumentEditor.css';
 import { importWasm } from './importWasm';
 
-const VERBOSE_LOGGING = false;
+const DEBUG_LOGGING = false;
+const PERFORMANCE_LOGGING = true;
 const Z_KEY_CODE = 90;
 
 function DocumentEditor(props: any) {
@@ -41,7 +42,7 @@ function DocumentEditor(props: any) {
   function onInput(event: any) {
     event.preventDefault();
 
-    if (VERBOSE_LOGGING) {
+    if (DEBUG_LOGGING) {
       console.log("onInput");
       console.log("event.nativeEvent.inputType", event.nativeEvent.inputType);
       console.log("event.nativeEvent.data", event.nativeEvent.data);
@@ -66,22 +67,29 @@ function DocumentEditor(props: any) {
   }
 
   function updateFromInputEvent(inputEventParams: any) {
+    if (PERFORMANCE_LOGGING) performance.mark("updateFromInputEventStart");
     documentEditorModel.updateFromInputEvent(inputEventParams);
+    if (PERFORMANCE_LOGGING) performance.mark("updateFromInputEventEnd");
 
-    let startedAt: any = null;
-    if (VERBOSE_LOGGING) {
-      startedAt = performance.now();
-    }
-    textAreaElem.current.value = documentEditorModel.computeValue();
-    if (VERBOSE_LOGGING) {
-      const timeElapsed = performance.now() - startedAt;
-      console.log(`Time elapsed: documentEditorModel.computeValue(): ${timeElapsed} ms`);
+    if (PERFORMANCE_LOGGING) performance.mark("getValueStart");
+    textAreaElem.current.value = documentEditorModel.getValue();
+    if (PERFORMANCE_LOGGING) {
+      performance.mark("getValueEnd");
+      performance.measure("updateFromInputEvent", "updateFromInputEventStart", "updateFromInputEventEnd");
+      performance.measure("getValue", "getValueStart", "getValueEnd");
+      performance.getEntriesByType("measure").forEach((entry) => {
+        console.log(entry.name, `${entry.duration} ms`);
+      });
+      performance.clearMarks();
+      performance.clearMeasures();
     }
     const selection = documentEditorModel.getSelection();
     textAreaElem.current.selectionStart = selection.start;
     textAreaElem.current.selectionEnd = selection.end;
     setDebugSelection(selection);
-    setDebugLines(documentEditorModel.getDebugLines());
+    if (DEBUG_LOGGING) {
+      setDebugLines(documentEditorModel.getDebugLines());
+    }
   }
 
   async function submitNextRevision() {
@@ -90,7 +98,9 @@ function DocumentEditor(props: any) {
     } catch (e) {
       console.error("Error submitting next revision:", e);
     }
-    setDebugLines(documentEditorModel.getDebugLines());
+    if (DEBUG_LOGGING) {
+      setDebugLines(documentEditorModel.getDebugLines());
+    }
   }
 
   return (

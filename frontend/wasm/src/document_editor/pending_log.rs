@@ -17,10 +17,6 @@ impl PendingLog {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.change_sets.len()
-    }
-
     pub fn front(&self) -> Option<&ChangeSet> {
         self.change_sets.front()
     }
@@ -33,6 +29,12 @@ impl PendingLog {
         self.change_sets.pop_front()
     }
 
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize {
+        self.change_sets.len()
+    }
+
+    #[allow(dead_code)]
     pub fn compose_range(&self, range: Range<usize>) -> Result<Option<ChangeSet>, OtError> {
         if range.start >= self.change_sets.len() {
             return Ok(None);

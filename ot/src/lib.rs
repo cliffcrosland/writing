@@ -391,14 +391,9 @@ pub fn apply_slice(document_u16: &[u16], change_set: &ChangeSet) -> Result<Vec<u
             input_len, doc_len,
         )));
     }
-    let unexpected_missing_char = || {
-        OtError::InvalidInput(String::from(
-            "Unexpected missing character in document. Pre-condition failed",
-        ))
-    };
-    let mut new_document_u16: Vec<u16> = Vec::new();
+    let mut i = 0;
+    let mut new_document_u16: Vec<u16> = Vec::with_capacity(document_u16.len());
     let mut new_doc_len = 0;
-    let mut document_u16_iter = document_u16.iter();
     for change_op in change_set.ops.iter() {
         let op = change_op
             .op
@@ -410,20 +405,12 @@ pub fn apply_slice(document_u16: &[u16], change_set: &ChangeSet) -> Result<Vec<u
                 new_doc_len += insert.content.len();
             }
             Op::Delete(delete) => {
-                for _ in 0..delete.count {
-                    document_u16_iter
-                        .next()
-                        .ok_or_else(unexpected_missing_char)?;
-                }
+                i += delete.count as usize;
             }
             Op::Retain(retain) => {
-                for _ in 0..retain.count {
-                    let ch = document_u16_iter
-                        .next()
-                        .ok_or_else(unexpected_missing_char)?;
-                    new_document_u16.push(*ch);
-                    new_doc_len += 1;
-                }
+                new_document_u16.extend_from_slice(&document_u16[i..(i + retain.count as usize)]);
+                i += retain.count as usize;
+                new_doc_len += retain.count as usize;
             }
         }
     }

@@ -51,11 +51,13 @@ impl CommittedLog {
         }
     }
 
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         let inner = self.inner.lock().unwrap();
         inner.revisions.len()
     }
 
+    #[allow(dead_code)]
     pub fn compose_range(&self, range: Range<usize>) -> Result<Option<ChangeSet>, OtError> {
         let inner = self.inner.lock().unwrap();
         if range.start >= inner.revisions.len() {
