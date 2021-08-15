@@ -129,7 +129,7 @@ pub async fn get_document_revisions(
             av_s(":doc_id", &request.doc_id),
             av_n(":after_revision_number", request.after_revision_number),
         ])),
-        projection_expression: Some(String::from("revision_number, change_set, committed_at")),
+        projection_expression: Some(String::from("author_user_id, revision_number, change_set, committed_at")),
         ..Default::default()
     };
     let output = dynamodb_client.query(input).await.map_err(|e| {
@@ -154,6 +154,7 @@ pub async fn get_document_revisions(
         error::ErrorInternalServerError("")
     };
     for item in items.into_iter() {
+        let author_user_id = av_get_s(&item, "author_user_id").ok_or_else(missing_field_error)?;
         let revision_number = av_get_n(&item, "revision_number").ok_or_else(missing_field_error)?;
         let change_set_binary = av_get_b(&item, "change_set").ok_or_else(missing_field_error)?;
         let committed_at = av_get_s(&item, "committed_at").ok_or_else(missing_field_error)?;
@@ -163,6 +164,7 @@ pub async fn get_document_revisions(
         })?;
         response.revisions.push(DocumentRevision {
             doc_id: request.doc_id.clone(),
+            author_user_id: author_user_id.to_string(),
             revision_number,
             change_set: Some(change_set),
             committed_at: String::from(committed_at),
@@ -226,6 +228,7 @@ pub async fn submit_document_change_set(
         table_name: table_name("document_revisions"),
         item: av_map(&[
             av_s("doc_id", &request.doc_id),
+            av_s("author_user_id", session_user.user_id.as_str()),
             av_n("revision_number", new_revision_number),
             av_b("change_set", change_set_binary),
             av_s("committed_at", &committed_at),
@@ -243,6 +246,7 @@ pub async fn submit_document_change_set(
             last_revision_number: new_revision_number,
             revisions: vec![DocumentRevision {
                 doc_id: request.doc_id.clone(),
+                author_user_id: session_user.user_id.as_str().to_string(),
                 revision_number: new_revision_number,
                 change_set: request.change_set.clone(),
                 committed_at,
@@ -630,18 +634,21 @@ mod tests {
         let items: Vec<HashMap<String, AttributeValue>> = vec![
             av_map(&[
                 av_s("doc_id", doc_id1.as_str()),
+                av_s("author_user_id", user_id1.as_str()),
                 av_n("revision_number", 1),
                 av_b("change_set", change_set_bytes1.clone()),
                 av_s("committed_at", &time::date_time_iso_str(&dt1)),
             ]),
             av_map(&[
                 av_s("doc_id", doc_id1.as_str()),
+                av_s("author_user_id", user_id2.as_str()),
                 av_n("revision_number", 2),
                 av_b("change_set", change_set_bytes2.clone()),
                 av_s("committed_at", &time::date_time_iso_str(&dt2)),
             ]),
             av_map(&[
                 av_s("doc_id", doc_id2.as_str()),
+                av_s("author_user_id", user_id2.as_str()),
                 av_n("revision_number", 1),
                 av_b("change_set", change_set_bytes1.clone()),
                 av_s("committed_at", &time::date_time_iso_str(&dt3)),
@@ -671,6 +678,7 @@ mod tests {
         assert_eq!(response.last_revision_number, 2);
         assert_eq!(response.revisions.len(), 2);
         assert_eq!(&response.revisions[0].doc_id, doc_id1.as_str());
+        assert_eq!(&response.revisions[0].author_user_id, user_id1.as_str());
         assert_eq!(response.revisions[0].revision_number, 1);
         assert_eq!(
             response.revisions[0].change_set.as_ref().unwrap(),
@@ -681,6 +689,7 @@ mod tests {
             &time::date_time_iso_str(&dt1)
         );
         assert_eq!(&response.revisions[1].doc_id, doc_id1.as_str());
+        assert_eq!(&response.revisions[1].author_user_id, user_id2.as_str());
         assert_eq!(response.revisions[1].revision_number, 2);
         assert_eq!(
             response.revisions[1].change_set.as_ref().unwrap(),
@@ -731,10 +740,12 @@ mod tests {
 
         let dt1 = chrono::Utc::now().sub(chrono::Duration::days(7));
 
+        let some_other_user_id = Id::new(IdType::User);
         let input = PutItemInput {
             table_name: table_name("document_revisions"),
             item: av_map(&[
                 av_s("doc_id", doc_id.as_str()),
+                av_s("author_user_id", some_other_user_id.as_str()),
                 av_n("revision_number", 1),
                 av_b("change_set", existing_change_set_bytes.clone()),
                 av_s("committed_at", &time::date_time_iso_str(&dt1)),
@@ -763,6 +774,7 @@ mod tests {
             committed_revision.change_set.as_ref().unwrap(),
             &new_change_set
         );
+        assert_eq!(&committed_revision.author_user_id, session_user.user_id.as_str());
         assert!(response.end_of_revisions);
 
         // Verify that we can read the revision that we just wrote.
@@ -807,6 +819,7 @@ mod tests {
         let doc_id = Id::new(IdType::Document);
         let org_id = Id::new(IdType::Organization);
         let user_id = Id::new(IdType::User);
+        let some_other_user_id = Id::new(IdType::User);
         let session_user = SessionUser {
             user_id: user_id.clone(),
             org_id: org_id.clone(),
@@ -830,12 +843,14 @@ mod tests {
         let items: Vec<HashMap<String, AttributeValue>> = vec![
             av_map(&[
                 av_s("doc_id", doc_id.as_str()),
+                av_s("author_user_id", user_id.as_str()),
                 av_n("revision_number", 1),
                 av_b("change_set", change_set_bytes1.clone()),
                 av_s("committed_at", &time::date_time_iso_str(&dt1)),
             ]),
             av_map(&[
                 av_s("doc_id", doc_id.as_str()),
+                av_s("author_user_id", some_other_user_id.as_str()),
                 av_n("revision_number", 2),
                 av_b("change_set", change_set_bytes2.clone()),
                 av_s("committed_at", &time::date_time_iso_str(&dt2)),
@@ -871,6 +886,7 @@ mod tests {
         assert_eq!(response.last_revision_number, 2);
         assert_eq!(response.revisions.len(), 1);
         assert_eq!(&response.revisions[0].doc_id, doc_id.as_str());
+        assert_eq!(&response.revisions[0].author_user_id, some_other_user_id.as_str());
         assert_eq!(response.revisions[0].revision_number, 2);
         assert_eq!(
             response.revisions[0].change_set.as_ref().unwrap(),

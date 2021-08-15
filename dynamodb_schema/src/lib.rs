@@ -195,6 +195,7 @@ lazy_static! {
              * document_revisions
              *
              *   doc_id: string, d_<id>
+             *   author_user_id: string, u_<id>
              *   revision_number: integer
              *   change_set: binary, protobuf message
              *   committed_at: string, iso 8601 date time
