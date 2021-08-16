@@ -33,6 +33,16 @@ impl PendingLog {
         self.change_sets.len()
     }
 
+    pub fn compress(&mut self) -> Result<(), OtError> {
+        if self.change_sets.is_empty() {
+            return Ok(());
+        }
+        let change_set = ot::compose_iter(self.change_sets.iter())?;
+        self.change_sets.clear();
+        self.change_sets.push_back(change_set);
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn compose_range(&self, range: Range<usize>) -> Result<Option<ChangeSet>, OtError> {
         if range.start >= self.change_sets.len() {
