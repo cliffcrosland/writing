@@ -1,4 +1,8 @@
-import React, { useRef, useState } from 'react';
+import React, {
+  useEffect,
+  useRef,
+  useState
+} from 'react';
 import './DocumentEditor.css';
 import { importWasm } from './importWasm';
 
@@ -7,18 +11,49 @@ const PERFORMANCE_LOGGING = true;
 const Z_KEY_CODE = 90;
 
 function DocumentEditor(props: any) {
-  const { InputEventParams, DocumentEditorModel, JsSelection } = importWasm();
+  const { InputEventParams, DocumentEditorModel, JsBackendApi, JsSelection } = importWasm();
 
   const textAreaElem: any = useRef(null);
+  const [title, setTitle] = useState('Untitled Document');
+  const [loaded, setLoaded] = useState(false);
   const [documentEditorModel, _] = useState(() => {
-    return DocumentEditorModel.new(props.orgId, props.docId, props.userId);
+    return DocumentEditorModel.new(props.docId);
   });
   const [debugSelection, setDebugSelection] = useState(JsSelection.new(0, 0));
   const [debugLines, setDebugLines] = useState(new Array<string>());
-  
+
+  // Load the document metadata, sync contents.
+  useEffect(() => {
+    if (loaded) return;
+    async function loadDocument() {
+      try {
+        const getDocumentPromise = JsBackendApi.getDocument(props.docId);
+        const syncPromise = documentEditorModel.sync();
+        const [getDocumentResponse, _] = await Promise.all([getDocumentPromise, syncPromise]);
+        setTitle(getDocumentResponse.document.title);
+        setLoaded(true);
+        syncDocumentValueAndSelection();
+      } catch (e: any) {
+        console.error(e);
+      }
+    }
+    loadDocument();
+  });
+
+  // Periodically run sync.
+  useEffect(() => {
+    let intervalId = setInterval(() => {
+      console.log('Running sync...');
+      sync();
+    }, 1000);
+    return function () {
+      clearInterval(intervalId);
+    };
+  });
+
   function captureSelection(event: any) {
     const newSelection = JsSelection.new(
-      event.target.selectionStart, 
+      event.target.selectionStart,
       event.target.selectionEnd
     );
     documentEditorModel.setSelection(newSelection.clone_selection());
@@ -70,7 +105,11 @@ function DocumentEditor(props: any) {
     if (PERFORMANCE_LOGGING) performance.mark("updateFromInputEventStart");
     documentEditorModel.updateFromInputEvent(inputEventParams);
     if (PERFORMANCE_LOGGING) performance.mark("updateFromInputEventEnd");
+    syncDocumentValueAndSelection();
+  }
 
+  function syncDocumentValueAndSelection() {
+    if (!textAreaElem.current) return;
     if (PERFORMANCE_LOGGING) performance.mark("getValueStart");
     textAreaElem.current.value = documentEditorModel.getValue();
     if (PERFORMANCE_LOGGING) {
@@ -92,44 +131,49 @@ function DocumentEditor(props: any) {
     }
   }
 
-  async function submitNextRevision() {
+  async function sync() {
     try {
-      await documentEditorModel.submitNextRevision();
+      await documentEditorModel.sync();
+      syncDocumentValueAndSelection();
+      if (DEBUG_LOGGING) {
+        setDebugLines(documentEditorModel.getDebugLines());
+      }
     } catch (e) {
-      console.error("Error submitting next revision:", e);
-    }
-    if (DEBUG_LOGGING) {
-      setDebugLines(documentEditorModel.getDebugLines());
+      console.error("Error syncing with server:", e);
     }
   }
 
   return (
     <div className="DocumentEditor">
-      <div className="DocumentEditor-controls">
-        <textarea 
-          ref={textAreaElem}
-          className="DocumentEditor-text"
-          onDragStart={captureSelection}
-          onSelect={captureSelection}
-          onKeyDown={onKeyDown}
-          onInput={onInput}
-        ></textarea>
-        <div className="DocumentEditor-selection">
-          { debugSelection.toString() }
-        </div>
-        <div className="DocumentEditor-revisions">
-          <div className="DocumentEditor-submitRevision">
-            <div>
-              <button onClick={submitNextRevision}>Submit Next Revision</button>
-            </div>
+      {!loaded ?
+        <div>Loading...</div> :
+        <div className="DocumentEditor-controls">
+          <h1>{title}</h1>
+          <textarea
+            ref={textAreaElem}
+            className="DocumentEditor-text"
+            onDragStart={captureSelection}
+            onSelect={captureSelection}
+            onKeyDown={onKeyDown}
+            onInput={onInput}
+          ></textarea>
+          <div className="DocumentEditor-selection">
+            { debugSelection.toString() }
           </div>
-          <ul className="DocumentEditor-revisionsList">
-            {debugLines.map((line, i) =>
-              <li key={i}>{line}</li>
-            )}
-          </ul>
+          <div className="DocumentEditor-revisions">
+            <div className="DocumentEditor-submitRevision">
+              <div>
+                <button onClick={sync}>Sync</button>
+              </div>
+            </div>
+            <ul className="DocumentEditor-revisionsList">
+              {debugLines.map((line, i) =>
+                <li key={i}>{line}</li>
+              )}
+            </ul>
+          </div>
         </div>
-      </div>
+      }
     </div>
   );
 }

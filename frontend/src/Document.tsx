@@ -1,16 +1,14 @@
-import React, { useState } from 'react';
+import React from 'react';
+import { useParams } from 'react-router-dom';
 import DocumentEditor from './DocumentEditor';
 import './Document.css';
 
 function Document() {
-  const orgId = "o-abc123";
-  const docId = "d-def456";
-  const userId = "u-ghi789";
+  let { id } = useParams() as any;
 
   return (
     <div className="Document">
-      <h1 className="Document-header">Document</h1>
-      <DocumentEditor orgId={orgId} docId={docId} userId={userId} />
+      <DocumentEditor docId={id} />
     </div>
   );
 }

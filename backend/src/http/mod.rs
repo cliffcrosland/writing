@@ -98,3 +98,10 @@ pub fn extract_session_cookie_id(session: &Session, key: &str) -> Option<Id> {
         _ => None,
     }
 }
+
+pub fn configure_cors() -> actix_cors::Cors {
+    // TODO(cliff): Make this sane!!! Doing this just to unblock local development.
+    actix_cors::Cors::default()
+        .allow_any_origin()
+        .send_wildcard()
+}

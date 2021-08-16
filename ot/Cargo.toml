@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 prost = "0.6"
+serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
 tonic = { version = "0.3", default-features = false, features = ["codegen", "prost"] }
 

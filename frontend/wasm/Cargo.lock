@@ -256,6 +256,7 @@ name = "ot"
 version = "0.1.0"
 dependencies = [
  "prost",
+ "serde",
  "thiserror",
  "tonic",
  "tonic-build",

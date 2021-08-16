@@ -9,6 +9,7 @@ mod utils;
 #[cfg(test)]
 mod testing;
 
+use actix_web::middleware::Logger;
 use actix_web::{App, HttpServer};
 use rusoto_dynamodb::DynamoDbClient;
 use std::sync::Arc;
@@ -33,11 +34,14 @@ async fn main() -> anyhow::Result<()> {
             .data(BackendService {
                 dynamodb_client: dynamodb_client.clone(),
             })
+            .wrap(Logger::default())
+            .wrap(http::configure_cors())
             .wrap(http::create_cookie_session(
                 config().cookie_secret.as_bytes(),
                 config().cookie_secure,
             ))
             .service(http::api::documents::create_document)
+            .service(http::api::documents::get_document)
             .service(http::api::documents::get_document_revisions)
             .service(http::api::documents::list_my_documents)
             .service(http::api::documents::submit_document_change_set)
@@ -50,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
             .service(http::sessions::submit_log_out)
             .service(http::sessions::submit_sign_up)
     })
-    .bind(format!("127.0.0.1:{}", &config().http_port))?
+    .bind(format!("localhost:{}", &config().http_port))?
     .run()
     .await?;
 

@@ -1,5 +1,6 @@
+use std::cell::RefCell;
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 use thiserror::Error;
 
@@ -24,14 +25,14 @@ pub enum CommittedLogError {
     InvalidStateError(String),
 }
 
+#[derive(Clone)]
 pub struct CommittedLog {
-    doc_id: String,
-    org_id: String,
-    inner: Arc<Mutex<CommittedLogInner>>,
+    inner: Rc<RefCell<CommittedLogInner>>,
 }
 
 struct CommittedLogInner {
     // List of all committed revisions.
+    doc_id: String,
     revisions: Vec<DocumentRevision>,
 }
 
@@ -41,11 +42,10 @@ pub struct ComposedRemoteRevisions {
 }
 
 impl CommittedLog {
-    pub fn new(doc_id: &str, org_id: &str) -> Self {
+    pub fn new(doc_id: &str) -> Self {
         Self {
-            doc_id: doc_id.to_string(),
-            org_id: org_id.to_string(),
-            inner: Arc::new(Mutex::new(CommittedLogInner {
+            inner: Rc::new(RefCell::new(CommittedLogInner {
+                doc_id: doc_id.to_string(),
                 revisions: Vec::new(),
             })),
         }
@@ -53,20 +53,19 @@ impl CommittedLog {
 
     #[allow(dead_code)]
     pub fn len(&self) -> usize {
-        let inner = self.inner.lock().unwrap();
-        inner.revisions.len()
+        self.inner.borrow().revisions.len()
     }
 
     #[allow(dead_code)]
     pub fn compose_range(&self, range: Range<usize>) -> Result<Option<ChangeSet>, OtError> {
-        let inner = self.inner.lock().unwrap();
-        if range.start >= inner.revisions.len() {
+        let self_ = self.inner.borrow();
+        if range.start >= self_.revisions.len() {
             return Ok(None);
         }
         if range.end <= range.start {
             return Ok(None);
         }
-        let iter = inner.revisions[range.start..range.end]
+        let iter = self_.revisions[range.start..range.end]
             .iter()
             .map(|rev| rev.change_set.as_ref().unwrap());
         Ok(Some(ot::compose_iter(iter)?))
@@ -88,16 +87,15 @@ impl CommittedLog {
     ) -> Result<submit_document_change_set_response::ResponseCode, CommittedLogError> {
         use submit_document_change_set_response::ResponseCode;
         let mut request = SubmitDocumentChangeSetRequest {
-            doc_id: self.doc_id.clone(),
-            org_id: self.org_id.clone(),
             change_set: Some(change_set.clone()),
             ..SubmitDocumentChangeSetRequest::default()
         };
         {
-            let inner = self.inner.lock().unwrap();
-            request.on_revision_number = inner.last_revision_number();
+            let self_ = self.inner.borrow();
+            request.doc_id = self_.doc_id.clone();
+            request.on_revision_number = self_.last_revision_number();
         }
-        let inner = self.inner.clone();
+        let self_ = self.inner.clone();
         let mut response = BackendApi::submit_document_change_set(&request)
             .await
             .map_err(CommittedLogError::BackendApiError)?;
@@ -114,8 +112,8 @@ impl CommittedLog {
                         response.revisions.len()
                     )));
                 }
-                let mut inner = inner.lock().unwrap();
-                inner.revisions.push(response.revisions.pop().unwrap());
+                let mut self_ = self_.borrow_mut();
+                self_.revisions.push(response.revisions.pop().unwrap());
                 Ok(ResponseCode::Ack)
             }
             _ => Err(CommittedLogError::InvalidResponseError(String::from(
@@ -134,21 +132,23 @@ impl CommittedLog {
     pub async fn load_new_remote_revisions(
         &self,
     ) -> Result<Option<ComposedRemoteRevisions>, CommittedLogError> {
-        let inner = self.inner.clone();
+        let self_ = self.inner.clone();
         // Query for new remote revisions that have revision_number greater than the last revision
         // number in our log.
+        let doc_id: String;
         let mut last_revision_number;
         {
-            let inner = inner.lock().unwrap();
-            last_revision_number = inner.last_revision_number();
+            let self_ = self_.borrow();
+            doc_id = self_.doc_id.clone();
+            last_revision_number = self_.last_revision_number();
         }
 
         // Read batches of new remote revisions from the backend API.
         let mut request = GetDocumentRevisionsRequest {
-            doc_id: self.doc_id.clone(),
-            org_id: self.org_id.clone(),
+            doc_id: doc_id.clone(),
             ..GetDocumentRevisionsRequest::default()
         };
+        let mut first_batch = true;
         let mut composed_change_sets = ChangeSet::new();
         let mut first_revision_number = None;
         loop {
@@ -173,16 +173,21 @@ impl CommittedLog {
                     .map(|rev| rev.change_set.as_ref().unwrap()),
             )
             .map_err(CommittedLogError::OtError)?;
-            composed_change_sets = ot::compose(&composed_change_sets, &composed_batch)
-                .map_err(CommittedLogError::OtError)?;
+            if first_batch {
+                first_batch = false;
+                composed_change_sets = composed_batch;
+            } else {
+                composed_change_sets = ot::compose(&composed_change_sets, &composed_batch)
+                    .map_err(CommittedLogError::OtError)?;
+            }
 
             // 3. Add new remote revisions to the committed log. Their revision numbers should be
             //    consecutive integers.
-            let mut inner = inner.lock().unwrap();
+            let mut self_ = self_.borrow_mut();
             for document_revision in response.revisions.into_iter() {
-                let current_last_revision_number = inner.last_revision_number();
+                let current_last_revision_number = self_.last_revision_number();
                 if document_revision.revision_number == 1 + current_last_revision_number {
-                    inner.revisions.push(document_revision);
+                    self_.revisions.push(document_revision);
                 } else {
                     return Err(CommittedLogError::InvalidStateError(format!(
                         "Received new remote revision number {}, but expected {}",
@@ -213,8 +218,8 @@ impl CommittedLog {
 
     pub fn get_debug_lines(&self) -> Vec<String> {
         let mut ret = Vec::new();
-        let inner = self.inner.lock().unwrap();
-        for revision in inner.revisions.iter() {
+        let self_ = self.inner.borrow();
+        for revision in self_.revisions.iter() {
             ret.push(format!(
                 "remote revision: {}",
                 get_change_set_description(revision.change_set.as_ref().unwrap())

@@ -2,16 +2,17 @@ mod committed_log;
 mod pending_log;
 mod undo_manager;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
 
 use js_sys::{Date, JsString, Promise};
 use thiserror::Error;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::future_to_promise;
 
-use ot::writing_proto::submit_document_change_set_response;
+use ot::writing_proto::submit_document_change_set_response::ResponseCode;
 use ot::writing_proto::{change_op::Op, ChangeSet, Selection};
 use ot::OtError;
 
@@ -37,9 +38,7 @@ enum DocumentEditorError {
 #[wasm_bindgen]
 pub struct DocumentEditorModel {
     doc_id: String,
-    org_id: String,
-    user_id: String,
-    inner: Arc<Mutex<DocumentEditorModelInner>>,
+    inner: Rc<RefCell<DocumentEditorModelInner>>,
 }
 
 struct DocumentEditorModelInner {
@@ -71,13 +70,11 @@ impl CurrentChange {
 
 #[wasm_bindgen]
 impl DocumentEditorModel {
-    pub fn new(org_id: String, doc_id: String, user_id: String) -> Self {
+    pub fn new(doc_id: String) -> Self {
         Self {
             doc_id: doc_id.clone(),
-            org_id: org_id.clone(),
-            user_id,
-            inner: Arc::new(Mutex::new(DocumentEditorModelInner {
-                committed_log: CommittedLog::new(&doc_id, &org_id),
+            inner: Rc::new(RefCell::new(DocumentEditorModelInner {
+                committed_log: CommittedLog::new(&doc_id),
                 pending_log: PendingLog::new(),
                 undo_manager: UndoManager::new(),
                 current_change: None,
@@ -93,36 +90,26 @@ impl DocumentEditorModel {
         self.doc_id.clone()
     }
 
-    #[wasm_bindgen(js_name = getOrgId)]
-    pub fn get_org_id(&self) -> String {
-        self.org_id.clone()
-    }
-
-    #[wasm_bindgen(js_name = getUserId)]
-    pub fn get_user_id(&self) -> String {
-        self.user_id.clone()
-    }
-
     #[wasm_bindgen(js_name = getSelection)]
     pub fn get_selection(&self) -> JsSelection {
-        let inner = self.inner.lock().unwrap();
-        inner.current_selection.clone().into()
+        let self_ = self.inner.borrow();
+        self_.current_selection.clone().into()
     }
 
     #[wasm_bindgen(js_name = setSelection)]
     pub fn set_selection(&self, selection: JsSelection) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.current_selection = selection.into();
+        let mut self_ = self.inner.borrow_mut();
+        self_.current_selection = selection.into();
     }
 
     #[wasm_bindgen(js_name = getValue)]
     pub fn get_value(&self) -> JsString {
-        let inner = self.inner.lock().unwrap();
-        if inner.current_value.len() < (1usize << 16) {
-            JsString::from_char_code(&inner.current_value)
+        let self_ = self.inner.borrow();
+        if self_.current_value.len() < (1usize << 16) {
+            JsString::from_char_code(&self_.current_value)
         } else {
             let mut ret = JsString::from("");
-            for chunk in inner.current_value.chunks(1usize << 16) {
+            for chunk in self_.current_value.chunks(1usize << 16) {
                 ret = ret.concat(&JsString::from_char_code(chunk));
             }
             ret
@@ -131,14 +118,14 @@ impl DocumentEditorModel {
 
     #[wasm_bindgen(js_name = isSyncRunning)]
     pub fn is_sync_running(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
-        inner.is_sync_running()
+        let self_ = self.inner.borrow();
+        self_.is_sync_running()
     }
 
     #[wasm_bindgen(js_name = updateFromInputEvent)]
     pub fn update_from_input_event(&self, input_event: InputEventParams) {
-        let mut inner = self.inner.lock().unwrap();
-        match inner.update_from_input_event(input_event) {
+        let mut self_ = self.inner.borrow_mut();
+        match self_.update_from_input_event(input_event) {
             Ok(_) => {}
             Err(e) => {
                 web_sys::console::error_1(
@@ -150,16 +137,23 @@ impl DocumentEditorModel {
 
     #[wasm_bindgen(js_name = sync)]
     pub fn sync(&self) -> Promise {
-        let inner = self.inner.clone();
+        let self_ = self.inner.clone();
         let future = async move {
-            let mut inner = inner.lock().unwrap();
-            match inner.sync().await {
-                Ok(_) => Ok(JsValue::UNDEFINED),
-                Err(e) => {
-                    let error_message = format!("Document Editor sync error: {:?}", e);
-                    let mut map = HashMap::new();
-                    map.insert("error".to_string(), error_message);
-                    Err(JsValue::from_serde(&map).unwrap())
+            let is_sync_running = {
+                let self_ = self_.borrow();
+                self_.is_sync_running()
+            };
+            if is_sync_running {
+                Ok(JsValue::UNDEFINED)
+            } else {
+                match DocumentEditorModelInner::sync(self_).await {
+                    Ok(_) => Ok(JsValue::UNDEFINED),
+                    Err(e) => {
+                        let error_message = format!("Document Editor sync error: {:?}", e);
+                        let mut map = HashMap::new();
+                        map.insert("error".to_string(), error_message);
+                        Err(JsValue::from_serde(&map).unwrap())
+                    }
                 }
             }
         };
@@ -168,91 +162,119 @@ impl DocumentEditorModel {
 
     #[wasm_bindgen(js_name = getDebugLines)]
     pub fn get_debug_lines(&self) -> JsValue {
-        let inner = self.inner.lock().unwrap();
+        let self_ = self.inner.borrow();
         let mut ret: Vec<String> = Vec::new();
-        ret.append(&mut inner.committed_log.get_debug_lines());
-        ret.append(&mut inner.pending_log.get_debug_lines());
-        if let Some(current_change) = inner.current_change.as_ref() {
+        ret.append(&mut self_.committed_log.get_debug_lines());
+        ret.append(&mut self_.pending_log.get_debug_lines());
+        if let Some(current_change) = self_.current_change.as_ref() {
             ret.push(format!(
                 "{}, editable until: {}",
                 get_change_set_description(&current_change.change_set),
                 current_change.editable_until
             ));
         }
-        ret.append(&mut inner.undo_manager.get_debug_lines());
+        ret.append(&mut self_.undo_manager.get_debug_lines());
         JsValue::from_serde(&ret).unwrap()
     }
 }
 
 impl DocumentEditorModelInner {
-    pub async fn sync(&mut self) -> anyhow::Result<()> {
-        if self.sync_running {
-            web_sys::console::warn_1(&JsValue::from_str(
-                "Warning: Tried to initiate a new sync, but a sync was already running",
-            ));
-            return Ok(());
+    pub async fn sync(self_: Rc<RefCell<DocumentEditorModelInner>>) -> anyhow::Result<()> {
+        {
+            let mut self_ = self_.borrow_mut();
+            self_.maybe_append_current_change_to_pending_log(false)?;
+            self_.sync_running = true;
         }
-        self.sync_running = true;
-        let result = self.sync_impl().await;
-        self.sync_running = false;
+        let result = Self::sync_impl(self_.clone()).await;
+        {
+            let mut self_ = self_.borrow_mut();
+            self_.sync_running = false;
+        }
         result
     }
 
-    async fn sync_impl(&mut self) -> anyhow::Result<()> {
-        for _ in 0..2 {
-            let mut retry_once = false;
-            // 1. Try to commit the next pending local revision to the remote server.
-            if let Some(change_set) = self.pending_log.front() {
-                use submit_document_change_set_response::ResponseCode;
-                match self
-                    .committed_log
-                    .commit_local_change_set(change_set)
-                    .await?
-                {
-                    ResponseCode::Ack => {
-                        self.pending_log.pop_front();
-                    }
-                    ResponseCode::DiscoveredNewRevisions => {
-                        // If we found new remote revisions, we will load them below and try
-                        // committing one more time.
-                        retry_once = true;
-                    }
-                    _ => {
-                        return Err(DocumentEditorError::InvalidStateError(
-                            "Received unknown response code.".to_string(),
-                        )
-                        .into());
-                    }
+    async fn sync_impl(self_: Rc<RefCell<DocumentEditorModelInner>>) -> anyhow::Result<()> {
+        let pending_log_len = {
+            let self_ = self_.borrow();
+            self_.pending_log.len()
+        };
+        if pending_log_len == 0 {
+            Self::load_new_remote_revisions(self_.clone()).await?;
+            return Ok(());
+        }
+        let mut loaded_remote = false;
+        for _ in 0..pending_log_len {
+            // Try to commit next pending revision. If we could not commit it because we discovered
+            // new remote revisions, load the remote revisions and try again only once. Conflict
+            // will be resolved eventually in a future sync round.
+            match Self::try_commit_next_pending_revision(self_.clone()).await? {
+                ResponseCode::DiscoveredNewRevisions => {
+                    Self::load_new_remote_revisions(self_.clone()).await?;
+                    Self::try_commit_next_pending_revision(self_.clone()).await?;
+                    loaded_remote = true;
                 }
-            }
-            // 2. Load any new revisions from the remote server. If we found some, transform
-            //    pending local revisions, and transform the current selection.
-            match self.committed_log.load_new_remote_revisions().await? {
-                None => {
-                    return Ok(());
-                }
-                Some(composed_remote_revisions) => {
-                    // Transform pending log.
-                    let mut transformed_remote = self
-                        .pending_log
-                        .transform(&composed_remote_revisions.composed_change_sets)?;
-
-                    // Transform undo/redo stacks.
-                    self.undo_manager.transform(&transformed_remote)?;
-
-                    // Transform current change and selection.
-                    if let Some(current_change) = self.current_change.as_mut() {
-                        transformed_remote = current_change.transform(&transformed_remote)?;
-                    }
-                    self.current_selection =
-                        ot::transform_selection(&self.current_selection, &transformed_remote)?;
-                }
-            }
-            if !retry_once {
-                break;
+                _ => continue,
             }
         }
+        if !loaded_remote {
+            Self::load_new_remote_revisions(self_.clone()).await?;
+        }
         Ok(())
+    }
+
+    async fn try_commit_next_pending_revision(
+        self_: Rc<RefCell<DocumentEditorModelInner>>,
+    ) -> anyhow::Result<ResponseCode> {
+        let change_set = {
+            let self_ = self_.borrow();
+            if self_.pending_log.front().is_none() {
+                return Ok(ResponseCode::Ack);
+            }
+            self_.pending_log.front().unwrap().clone()
+        };
+        let committed_log = self_.borrow().committed_log.clone();
+        match committed_log.commit_local_change_set(&change_set).await? {
+            ResponseCode::Ack => {
+                let mut self_ = self_.borrow_mut();
+                self_.pending_log.pop_front();
+                Ok(ResponseCode::Ack)
+            }
+            ResponseCode::DiscoveredNewRevisions => Ok(ResponseCode::DiscoveredNewRevisions),
+            _ => Err(DocumentEditorError::InvalidStateError(
+                "Received unknown response code.".to_string(),
+            )
+            .into()),
+        }
+    }
+
+    async fn load_new_remote_revisions(
+        self_: Rc<RefCell<DocumentEditorModelInner>>,
+    ) -> anyhow::Result<()> {
+        let committed_log = self_.borrow().committed_log.clone();
+        match committed_log.load_new_remote_revisions().await? {
+            None => Ok(()),
+            Some(composed_remote_revisions) => {
+                let mut self_ = self_.borrow_mut();
+                // Transform pending log.
+                let mut transformed_remote = self_
+                    .pending_log
+                    .transform(&composed_remote_revisions.composed_change_sets)?;
+
+                // Apply transformed remote change set to current value.
+                self_.current_value = ot::apply_slice(&self_.current_value, &transformed_remote)?;
+
+                // Transform undo/redo stacks.
+                self_.undo_manager.transform(&transformed_remote)?;
+
+                // Transform current change and selection.
+                if let Some(current_change) = self_.current_change.as_mut() {
+                    transformed_remote = current_change.transform(&transformed_remote)?;
+                }
+                self_.current_selection =
+                    ot::transform_selection(&self_.current_selection, &transformed_remote)?;
+                Ok(())
+            }
+        }
     }
 
     pub fn is_sync_running(&self) -> bool {
@@ -282,8 +304,7 @@ impl DocumentEditorModelInner {
     }
 
     pub fn process_undo_command(&mut self, undo_type: UndoType) -> anyhow::Result<()> {
-        let current_change = self.current_change.take();
-        self.append_current_change_to_pending_log(current_change)?;
+        self.maybe_append_current_change_to_pending_log(true)?;
 
         let undo_item = match self.undo_manager.pop(undo_type) {
             Some(undo_item) => undo_item,
@@ -308,19 +329,12 @@ impl DocumentEditorModelInner {
     }
 
     pub fn process_edit_command(&mut self, input_event: &InputEventParams) -> anyhow::Result<()> {
-        let (change_set, mut should_start_new_revision) = compute_change_set_from_input_event(
+        let (change_set, should_start_new_revision) = compute_change_set_from_input_event(
             &self.current_selection.clone().into(),
             &self.current_value,
             input_event,
         )?;
-        if let Some(current_change) = self.current_change.as_ref() {
-            should_start_new_revision =
-                should_start_new_revision || Date::now() > current_change.editable_until;
-        }
-        if should_start_new_revision {
-            let current_change = self.current_change.take();
-            self.append_current_change_to_pending_log(current_change)?;
-        }
+        self.maybe_append_current_change_to_pending_log(should_start_new_revision)?;
         if self.current_change.is_none() {
             self.current_change = Some(CurrentChange {
                 change_set: change_set.clone(),
@@ -337,16 +351,16 @@ impl DocumentEditorModelInner {
         Ok(())
     }
 
-    fn append_current_change_to_pending_log(
-        &mut self,
-        current_change: Option<CurrentChange>,
-    ) -> anyhow::Result<()> {
-        let current_change = match current_change {
-            Some(current_change) => current_change,
-            None => {
-                return Ok(());
-            }
-        };
+    fn maybe_append_current_change_to_pending_log(&mut self, force: bool) -> anyhow::Result<()> {
+        if self.current_change.is_none() {
+            return Ok(());
+        }
+        let current_change = self.current_change.as_ref().unwrap();
+        let should_append = force || Date::now() > current_change.editable_until;
+        if !should_append {
+            return Ok(());
+        }
+        let current_change = self.current_change.take().unwrap();
         let undo_item = UndoItem {
             change_set: ot::invert_slice(&current_change.prior_value, &current_change.change_set)?,
             selection_after: current_change.prior_selection.clone(),

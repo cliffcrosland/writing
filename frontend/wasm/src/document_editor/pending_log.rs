@@ -29,7 +29,6 @@ impl PendingLog {
         self.change_sets.pop_front()
     }
 
-    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.change_sets.len()
     }

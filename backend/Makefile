@@ -7,11 +7,11 @@ check:
 release:
 	cargo build --release
 
-run:
+start:
 	cargo build
 	./target/debug/backend
 
-run_release:
+start_release:
 	cargo build --release
 	./target/release/backend
 

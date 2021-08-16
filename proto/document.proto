@@ -68,8 +68,7 @@ message Selection {
 // RPC messages for real-time collaborative document editing
 
 message CreateDocumentRequest {
-  string org_id = 1;
-  string title = 2;
+  string title = 1;
   DocumentSharingPermission org_level_sharing_permission = 3;
 }
 
@@ -79,7 +78,6 @@ message CreateDocumentResponse {
 
 message GetDocumentRequest {
   string doc_id = 1;
-  string org_id = 2;
 }
 
 message GetDocumentResponse {
@@ -88,8 +86,7 @@ message GetDocumentResponse {
 
 message GetDocumentRevisionsRequest {
   string doc_id = 1;
-  string org_id = 2;
-  int64 after_revision_number = 3;
+  int64 after_revision_number = 2;
 }
 
 message GetDocumentRevisionsResponse {
@@ -100,9 +97,8 @@ message GetDocumentRevisionsResponse {
 
 message SubmitDocumentChangeSetRequest {
   string doc_id = 1;
-  string org_id = 2;
-  int64 on_revision_number = 3;
-  ChangeSet change_set = 4;
+  int64 on_revision_number = 2;
+  ChangeSet change_set = 3;
 }
 
 message SubmitDocumentChangeSetResponse {
@@ -119,8 +115,7 @@ message SubmitDocumentChangeSetResponse {
 
 message UpdateDocumentTitleRequest {
   string doc_id = 1;
-  string org_id = 2;
-  string new_title = 3;
+  string new_title = 2;
 }
 
 message UpdateDocumentTitleResponse {
