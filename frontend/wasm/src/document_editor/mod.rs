@@ -1,4 +1,5 @@
 mod committed_log;
+mod document_value;
 mod pending_log;
 mod undo_manager;
 

@@ -475,10 +475,10 @@ pub fn apply_chunks(
     loop {
         match (maybe_chunk, maybe_op) {
             (None, None) => break,
-            (Some(chunk), Some(Op::Insert(insert))) => {
+            (chunk, Some(Op::Insert(insert))) => {
                 let content: Vec<u16> = insert.content.iter().map(|ch| *ch as u16).collect();
                 new_document_chunks.push(content);
-                maybe_chunk = Some(chunk);
+                maybe_chunk = chunk;
                 maybe_op = next_op(&mut ops_iter)?;
             }
             (Some(mut chunk), Some(Op::Retain(retain))) => {
@@ -540,6 +540,7 @@ pub fn apply_chunks(
     }
     Ok(new_document_chunks)
 }
+
 
 /// Inverts the given `ChangeSet`, turning `Insert` operations into `Delete` operations, and
 /// vice versa. To turn `Delete` operations into `Insert`, we need to original document whose
@@ -662,7 +663,7 @@ pub fn transform_selection(
     })
 }
 
-fn next_op<'a>(iter: &mut dyn Iterator<Item = &'a ChangeOp>) -> Result<Option<&'a Op>, OtError> {
+pub fn next_op<'a>(iter: &mut dyn Iterator<Item = &'a ChangeOp>) -> Result<Option<&'a Op>, OtError> {
     match iter.next() {
         None => Ok(None),
         Some(change_op) => {
@@ -675,15 +676,15 @@ fn next_op<'a>(iter: &mut dyn Iterator<Item = &'a ChangeOp>) -> Result<Option<&'
     }
 }
 
-fn retain_op(count: i64) -> Op {
+pub fn retain_op(count: i64) -> Op {
     Op::Retain(Retain { count })
 }
 
-fn delete_op(count: i64) -> Op {
+pub fn delete_op(count: i64) -> Op {
     Op::Delete(Delete { count })
 }
 
-fn insert_op(content: &[u32]) -> Op {
+pub fn insert_op(content: &[u32]) -> Op {
     Op::Insert(Insert {
         content: content.to_vec(),
     })
@@ -852,7 +853,7 @@ impl std::fmt::Display for ChangeSet {
     }
 }
 
-fn get_input_output_doc_lengths(change_set: &ChangeSet) -> Result<(i64, i64), OtError> {
+pub fn get_input_output_doc_lengths(change_set: &ChangeSet) -> Result<(i64, i64), OtError> {
     let mut retained: i64 = 0;
     let mut deleted: i64 = 0;
     let mut inserted: i64 = 0;
@@ -1189,6 +1190,15 @@ mod tests {
             string_to_vec_u16("CC"),
             string_to_vec_u16("E"),
             string_to_vec_u16("CC"),
+        ];
+        assert_eq!(new_document_chunks, expected_new_document_chunks);
+
+        let document_chunks: Vec<Vec<u16>> = Vec::new();
+        let change_set = create_change_set(&["I:Hello"]);
+        let new_document_chunks = apply_chunks(document_chunks, &change_set).unwrap();
+        assert_eq!(new_document_chunks.len(), 1);
+        let expected_new_document_chunks = vec![
+            string_to_vec_u16("Hello"),
         ];
         assert_eq!(new_document_chunks, expected_new_document_chunks);
     }
