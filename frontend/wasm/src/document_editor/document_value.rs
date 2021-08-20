@@ -17,6 +17,7 @@ type DocumentValueChunkVersionId = usize;
 pub struct DocumentValueChunk {
     pub id: DocumentValueChunkId,
     pub version: DocumentValueChunkVersionId,
+    pub offset: usize,
     pub value: Vec<u16>,
 }
 
@@ -29,9 +30,10 @@ impl DocumentValue {
     }
 
     pub fn value_len(&self) -> usize {
-        self.chunks
-            .iter()
-            .fold(0, |sum, chunk| sum + chunk.value.len())
+        match self.chunks.last() {
+            None => 0,
+            Some(chunk) => chunk.offset + chunk.value.len(),
+        }
     }
 
     pub fn apply(&mut self, change_set: &ChangeSet) -> Result<(), OtError> {
@@ -79,6 +81,7 @@ impl DocumentValue {
                                 id: self.next_chunk_id(),
                                 value: next_chunk_value,
                                 version: 0,
+                                offset: 0,
                             });
                             maybe_op = ot::next_op(&mut ops_iter)?;
                         }
@@ -127,10 +130,98 @@ impl DocumentValue {
         Ok(())
     }
 
-    fn append_chunk(&mut self, chunk: DocumentValueChunk) {
+    pub fn invert(&self, change_set: &ChangeSet) -> Result<ChangeSet, OtError> {
+        let (input_len, _output_len) = ot::get_input_output_doc_lengths(change_set)?;
+        let value_len = self.value_len();
+        if input_len != value_len as i64 {
+            return Err(OtError::InvalidInput(format!(
+                "Cannot invert change set. Document length was {}, but change set input length was {}",
+                value_len,
+                input_len,
+            )));
+        }
+        let mut inverted = ChangeSet::new();
+        let mut ops_iter = change_set.ops.iter();
+        let mut maybe_op = ot::next_op(&mut ops_iter)?;
+        let mut i = 0;
+        loop {
+            match maybe_op {
+                None => break,
+                Some(Op::Retain(retain)) => {
+                    inverted.retain(retain.count);
+                    i += retain.count as usize;
+                    maybe_op = ot::next_op(&mut ops_iter)?;
+                }
+                Some(Op::Insert(insert)) => {
+                    inverted.delete(insert.content.len() as i64);
+                    maybe_op = ot::next_op(&mut ops_iter)?;
+                }
+                Some(Op::Delete(delete)) => {
+                    let content = self.get_value_in_range(i, i + delete.count as usize)?;
+                    inverted.insert_vec_u16(content);
+                    i += delete.count as usize;
+                    maybe_op = ot::next_op(&mut ops_iter)?;
+                }
+            }
+        }
+        Ok(inverted)
+    }
+
+    pub fn get_value_in_range(&self, mut start: usize, end: usize) -> Result<Vec<u16>, OtError> {
+        if start > end {
+            return Err(OtError::InvalidInput(format!(
+                "Invalid range: {:?}",
+                (start..end)
+            )));
+        }
+        if start == end {
+            return Ok(Vec::new());
+        }
+        if self.chunks.is_empty() {
+            return Err(OtError::InvalidInput(String::from(
+                "Cannot get value range from empty DocumentValue",
+            )));
+        }
+        if end > self.value_len() {
+            return Err(OtError::InvalidInput(format!(
+                "Invalid range: {:?}. End is greater than DocumentValue length {}",
+                (start..end),
+                self.value_len()
+            )));
+        }
+        let first = match self
+            .chunks
+            .binary_search_by(|chunk| chunk.offset.cmp(&start))
+        {
+            Ok(index) => index,
+            Err(index) => index - 1,
+        };
+        let last = match self
+            .chunks
+            .binary_search_by(|chunk| (chunk.offset + chunk.value.len()).cmp(&end))
+        {
+            Ok(index) => index,
+            Err(index) => index,
+        };
+        let mut value_in_range: Vec<u16> = Vec::new();
+        for i in first..=last {
+            let chunk = &self.chunks[i];
+            let slice_start = start - chunk.offset;
+            let slice_end = std::cmp::min(end - chunk.offset, chunk.value.len());
+            value_in_range.extend_from_slice(&chunk.value[slice_start..slice_end]);
+            start = chunk.offset + chunk.value.len();
+        }
+        Ok(value_in_range)
+    }
+
+    fn append_chunk(&mut self, mut chunk: DocumentValueChunk) {
         if self.can_append_to_last_chunk() {
             self.append_content(chunk.value);
         } else {
+            chunk.offset = match self.chunks.last() {
+                None => 0,
+                Some(last_chunk) => last_chunk.offset + last_chunk.value.len(),
+            };
             self.chunks.push(chunk);
         }
     }
@@ -141,7 +232,7 @@ impl DocumentValue {
             Some(chunk) => match &chunk.value[..] {
                 [.., last_char] if *last_char == '\n' as u16 => false,
                 _ => true,
-            }
+            },
         }
     }
 
@@ -172,10 +263,15 @@ impl DocumentValue {
 
     fn push_new_chunk(&mut self, content: Vec<u16>) {
         let id = self.next_chunk_id();
+        let offset = match self.chunks.last() {
+            None => 0,
+            Some(last_chunk) => last_chunk.offset + last_chunk.value.len(),
+        };
         self.chunks.push(DocumentValueChunk {
             id,
-            value: content,
+            offset,
             version: 0,
+            value: content,
         });
     }
 
@@ -239,13 +335,16 @@ mod tests {
         let chunk = &document_value.chunks[0];
         assert_eq!(chunk.id, 1);
         assert_eq!(chunk.version, 0);
+        assert_eq!(chunk.offset, 0);
         assert_eq!(String::from_utf16(&chunk.value).unwrap(), "Hello, world!");
     }
 
     #[test]
     fn test_apply_insert_newline() {
         let mut document_value = DocumentValue::new();
-        document_value.apply(&create_change_set(&["I:Hello, world!"])).unwrap();
+        document_value
+            .apply(&create_change_set(&["I:Hello, world!"]))
+            .unwrap();
 
         // Change "Hello, world!" into "Hello,\n world!"
         let change_set = create_change_set(&["R:6", "I:\n", "R:7"]);
@@ -258,10 +357,46 @@ mod tests {
         // did not make a new allocation for the first chunk.
         assert_eq!(first_chunk.id, 1);
         assert_eq!(first_chunk.version, 1);
+        assert_eq!(first_chunk.offset, 0);
         assert_eq!(String::from_utf16(&first_chunk.value).unwrap(), "Hello,\n");
         // Verify that second chunk has a new id and starts with a fresh version.
         assert_eq!(second_chunk.id, 2);
         assert_eq!(second_chunk.version, 0);
+        assert_eq!(second_chunk.offset, 7);
         assert_eq!(String::from_utf16(&second_chunk.value).unwrap(), " world!");
+    }
+
+    #[test]
+    fn test_invert() {
+        // Simple: invert a deletion from one chunk.
+        let mut document_value = DocumentValue::new();
+        document_value
+            .apply(&create_change_set(&["I:Hello, there friend!"]))
+            .unwrap();
+        assert_eq!(document_value.chunks.len(), 1);
+        let change_set = create_change_set(&["R:7", "D:5", "I:my", "R:8"]);
+        let result = document_value.invert(&change_set);
+        assert!(result.is_ok());
+        let inverted = result.unwrap();
+        assert_eq!(
+            inverted,
+            create_change_set(&["R:7", "I:there", "D:2", "R:8"])
+        );
+
+        // Complex: invert a deletion from multiple chunks.
+        let mut document_value = DocumentValue::new();
+        document_value
+            .apply(&create_change_set(&[
+                "I:Hello\nthere my\ngood and delightful\nfriend!",
+            ]))
+            .unwrap();
+        assert_eq!(document_value.chunks.len(), 4);
+        let change_set = create_change_set(&["R:12", "D:12", "R:18"]);
+        let result = document_value.invert(&change_set);
+        let inverted = result.unwrap();
+        assert_eq!(
+            inverted,
+            create_change_set(&["R:12", "I:my\ngood and ", "R:18"])
+        );
     }
 }

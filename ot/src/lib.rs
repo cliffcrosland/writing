@@ -763,6 +763,11 @@ impl ChangeSet {
         self.push_op(Op::Insert(Insert { content }));
     }
 
+    pub fn insert_vec_u16(&mut self, content: Vec<u16>) {
+        let content: Vec<u32> = content.into_iter().map(|ch| ch as u32).collect();
+        self.insert_vec(content);
+    }
+
     /// Appends an `Insert` operation to the change set. If the last operation was an `Insert`, it
     /// will be extended to include the new content.
     ///
