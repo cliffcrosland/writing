@@ -1,10 +1,11 @@
 use std::cmp::Ordering;
+use std::ops::Range;
 
 use ot::writing_proto::change_op::Op;
 use ot::writing_proto::ChangeSet;
 use ot::OtError;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DocumentValue {
     pub chunks: Vec<DocumentValueChunk>,
     chunk_id_counter: DocumentValueChunkId,
@@ -13,7 +14,7 @@ pub struct DocumentValue {
 type DocumentValueChunkId = usize;
 type DocumentValueChunkVersionId = usize;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct DocumentValueChunk {
     pub id: DocumentValueChunkId,
     pub version: DocumentValueChunkVersionId,
@@ -157,7 +158,7 @@ impl DocumentValue {
                     maybe_op = ot::next_op(&mut ops_iter)?;
                 }
                 Some(Op::Delete(delete)) => {
-                    let content = self.get_value_in_range(i, i + delete.count as usize)?;
+                    let content = self.get_value_in_range(i..(i + delete.count as usize))?;
                     inverted.insert_vec_u16(content);
                     i += delete.count as usize;
                     maybe_op = ot::next_op(&mut ops_iter)?;
@@ -167,7 +168,9 @@ impl DocumentValue {
         Ok(inverted)
     }
 
-    pub fn get_value_in_range(&self, mut start: usize, end: usize) -> Result<Vec<u16>, OtError> {
+    pub fn get_value_in_range(&self, range: Range<usize>) -> Result<Vec<u16>, OtError> {
+        let mut start = range.start;
+        let end = range.end;
         if start > end {
             return Err(OtError::InvalidInput(format!(
                 "Invalid range: {:?}",

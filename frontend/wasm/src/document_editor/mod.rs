@@ -18,6 +18,7 @@ use ot::writing_proto::{change_op::Op, ChangeSet, Selection};
 use ot::OtError;
 
 use crate::document_editor::committed_log::CommittedLog;
+use crate::document_editor::document_value::DocumentValue;
 use crate::document_editor::pending_log::PendingLog;
 use crate::document_editor::undo_manager::{UndoItem, UndoManager, UndoType};
 
@@ -49,14 +50,14 @@ struct DocumentEditorModelInner {
     undo_manager: UndoManager,
     current_change: Option<CurrentChange>,
     current_selection: Selection,
-    current_value: Vec<u16>,
+    current_value: DocumentValue,
     sync_running: bool,
 }
 
 struct CurrentChange {
     change_set: ChangeSet,
     prior_selection: Selection,
-    prior_value: Vec<u16>,
+    prior_value: DocumentValue,
     editable_until: f64,
 }
 
@@ -65,7 +66,7 @@ impl CurrentChange {
         let (transformed_change_set, transformed_remote) = ot::transform(&self.change_set, remote)?;
         self.change_set = transformed_change_set;
         self.prior_selection = ot::transform_selection(&self.prior_selection, &remote)?;
-        self.prior_value = ot::apply_slice(&self.prior_value, &remote)?;
+        self.prior_value.apply(&remote)?;
         Ok(transformed_remote)
     }
 }
@@ -81,7 +82,7 @@ impl DocumentEditorModel {
                 undo_manager: UndoManager::new(),
                 current_change: None,
                 current_selection: Selection::default(),
-                current_value: Vec::new(),
+                current_value: DocumentValue::new(),
                 sync_running: false,
             })),
         }
@@ -106,11 +107,15 @@ impl DocumentEditorModel {
     #[wasm_bindgen(js_name = getValue)]
     pub fn get_value(&self) -> JsString {
         let self_ = self.inner.borrow();
-        if self_.current_value.len() < (1usize << 16) {
-            JsString::from_char_code(&self_.current_value)
+        let current_value = self_
+            .current_value
+            .get_value_in_range(0..self_.current_value.value_len())
+            .unwrap();
+        if current_value.len() < (1usize << 16) {
+            JsString::from_char_code(&current_value)
         } else {
             let mut ret = JsString::from("");
-            for chunk in self_.current_value.chunks(1usize << 16) {
+            for chunk in current_value.chunks(1usize << 16) {
                 ret = ret.concat(&JsString::from_char_code(chunk));
             }
             ret
@@ -246,7 +251,7 @@ impl DocumentEditorModel {
                     .transform(&composed_remote_revisions.composed_change_sets)?;
 
                 // Apply transformed remote change set to current value.
-                self_.current_value = ot::apply_slice(&self_.current_value, &transformed_remote)?;
+                self_.current_value.apply(&transformed_remote)?;
 
                 // Transform undo/redo stacks.
                 self_.undo_manager.transform(&transformed_remote)?;
@@ -297,7 +302,7 @@ impl DocumentEditorModel {
         };
 
         let new_undo_item = UndoItem {
-            change_set: ot::invert_slice(&self_.current_value, &undo_item.change_set)?,
+            change_set: self_.current_value.invert(&undo_item.change_set)?,
             selection_after: self_.current_selection.clone(),
         };
         self_.pending_log.push_back(&undo_item.change_set);
@@ -305,16 +310,22 @@ impl DocumentEditorModel {
             UndoType::Undo => self_.undo_manager.push(UndoType::Redo, new_undo_item),
             UndoType::Redo => self_.undo_manager.push(UndoType::Undo, new_undo_item),
         }
-        self_.current_value = ot::apply_slice(&self_.current_value, &undo_item.change_set)?;
+        self_.current_value.apply(&undo_item.change_set)?;
         self_.current_selection = undo_item.selection_after;
 
         Ok(())
     }
 
     fn process_edit_command(&self, input_event: &InputEventParams) -> anyhow::Result<()> {
+        let current_value_vec = {
+            let self_ = self.inner.borrow();
+            self_
+                .current_value
+                .get_value_in_range(0..self_.current_value.value_len())?
+        };
         let (change_set, should_start_new_revision) = compute_change_set_from_input_event(
             &self.inner.borrow().current_selection.clone().into(),
-            &self.inner.borrow().current_value,
+            &current_value_vec,
             input_event,
         )?;
         self.maybe_append_current_change_to_pending_log(should_start_new_revision)?;
@@ -330,7 +341,7 @@ impl DocumentEditorModel {
             let mut current_change = self_.current_change.as_mut().unwrap();
             current_change.change_set = ot::compose(&current_change.change_set, &change_set)?;
         }
-        self_.current_value = ot::apply_slice(&self_.current_value, &change_set)?;
+        self_.current_value.apply(&change_set)?;
         self_.current_selection = input_event.selection.into();
         Ok(())
     }
@@ -347,7 +358,9 @@ impl DocumentEditorModel {
         }
         let current_change = self_.current_change.take().unwrap();
         let undo_item = UndoItem {
-            change_set: ot::invert_slice(&current_change.prior_value, &current_change.change_set)?,
+            change_set: current_change
+                .prior_value
+                .invert(&current_change.change_set)?,
             selection_after: current_change.prior_selection.clone(),
         };
         self_.pending_log.push_back(&current_change.change_set);
