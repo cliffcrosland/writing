@@ -718,7 +718,12 @@ pub fn create_empty_inverse(change_set: &ChangeSet) -> ChangeSet {
 impl ChangeSet {
     /// Creates an empty change set.
     pub fn new() -> Self {
-        Self { ops: vec![] }
+        Self { ops: Vec::new() }
+    }
+
+    /// Creates an empty change set, allocating enough capacity for the given number of operations.
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { ops: Vec::with_capacity(capacity) }
     }
 
     /// Appends a `Retain` operation to the change set. If the last operation was a `Retain`, it

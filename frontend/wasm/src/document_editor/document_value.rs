@@ -217,7 +217,7 @@ impl DocumentValue {
             Ok(index) => index,
             Err(index) => index,
         };
-        let mut value_in_range: Vec<u16> = Vec::new();
+        let mut value_in_range: Vec<u16> = Vec::with_capacity(range.end - range.start);
         for i in first..=last {
             let chunk = &self.chunks[i];
             let slice_start = start - chunk.offset;

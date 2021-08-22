@@ -29,8 +29,16 @@ impl PendingLog {
         self.change_sets.pop_front()
     }
 
+    pub fn back_mut(&mut self) -> Option<&mut ChangeSet> {
+        self.change_sets.back_mut()
+    }
+
     pub fn len(&self) -> usize {
         self.change_sets.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn compress(&mut self) -> Result<(), OtError> {

@@ -15,7 +15,6 @@ use wasm_bindgen_futures::future_to_promise;
 
 use ot::writing_proto::submit_document_change_set_response::ResponseCode;
 use ot::writing_proto::{change_op::Op, ChangeSet, Selection};
-use ot::OtError;
 
 use crate::document_editor::committed_log::CommittedLog;
 use crate::document_editor::document_value::{
@@ -29,7 +28,7 @@ use crate::document_editor::undo_manager::{UndoItem, UndoManager, UndoType};
 // be pushed to the undo stack.
 //
 // Reason: If the user is typing a lot, we don't want each keystroke to create a new revision.
-const MAX_CURRENT_CHANGE_EDITABLE_TIME: f64 = 2000.0;
+const MAX_COMPOSABLE_TIME: f64 = 2000.0;
 
 #[derive(Debug, Error)]
 enum DocumentEditorError {
@@ -50,27 +49,10 @@ struct DocumentEditorModelInner {
     committed_log: CommittedLog,
     pending_log: PendingLog,
     undo_manager: UndoManager,
-    current_change: Option<CurrentChange>,
     current_selection: Selection,
     current_value: DocumentValue,
     sync_running: bool,
-}
-
-struct CurrentChange {
-    change_set: ChangeSet,
-    prior_selection: Selection,
-    prior_value: DocumentValue,
-    editable_until: f64,
-}
-
-impl CurrentChange {
-    fn transform(&mut self, remote: &ChangeSet) -> Result<ChangeSet, OtError> {
-        let (transformed_change_set, transformed_remote) = ot::transform(&self.change_set, remote)?;
-        self.change_set = transformed_change_set;
-        self.prior_selection = ot::transform_selection(&self.prior_selection, &remote)?;
-        self.prior_value.apply(&remote)?;
-        Ok(transformed_remote)
-    }
+    last_pending_composable_until: f64,
 }
 
 #[wasm_bindgen]
@@ -82,10 +64,10 @@ impl DocumentEditorModel {
                 committed_log: CommittedLog::new(&doc_id),
                 pending_log: PendingLog::new(),
                 undo_manager: UndoManager::new(),
-                current_change: None,
                 current_selection: Selection::default(),
                 current_value: DocumentValue::new(),
                 sync_running: false,
+                last_pending_composable_until: 0.0,
             })),
         }
     }
@@ -182,13 +164,6 @@ impl DocumentEditorModel {
         let mut ret: Vec<String> = Vec::new();
         ret.append(&mut self_.committed_log.get_debug_lines());
         ret.append(&mut self_.pending_log.get_debug_lines());
-        if let Some(current_change) = self_.current_change.as_ref() {
-            ret.push(format!(
-                "{}, editable until: {}",
-                get_change_set_description(&current_change.change_set),
-                current_change.editable_until
-            ));
-        }
         ret.append(&mut self_.undo_manager.get_debug_lines());
         JsValue::from_serde(&ret).unwrap()
     }
@@ -197,7 +172,6 @@ impl DocumentEditorModel {
         if self.is_sync_running() {
             return Ok(());
         }
-        self.maybe_append_current_change_to_pending_log(false)?;
         self.compress_pending_log()?;
         self.set_sync_running(true);
         let self_ = self.clone();
@@ -261,7 +235,7 @@ impl DocumentEditorModel {
             Some(composed_remote_revisions) => {
                 let mut self_ = self_.inner.borrow_mut();
                 // Transform pending log.
-                let mut transformed_remote = self_
+                let transformed_remote = self_
                     .pending_log
                     .transform(&composed_remote_revisions.composed_change_sets)?;
 
@@ -272,9 +246,6 @@ impl DocumentEditorModel {
                 self_.undo_manager.transform(&transformed_remote)?;
 
                 // Transform current change and selection.
-                if let Some(current_change) = self_.current_change.as_mut() {
-                    transformed_remote = current_change.transform(&transformed_remote)?;
-                }
                 self_.current_selection =
                     ot::transform_selection(&self_.current_selection, &transformed_remote)?;
                 Ok(())
@@ -305,8 +276,6 @@ impl DocumentEditorModel {
     }
 
     fn process_undo_command(&self, undo_type: UndoType) -> anyhow::Result<()> {
-        self.maybe_append_current_change_to_pending_log(true)?;
-
         let mut self_ = self.inner.borrow_mut();
 
         let undo_item = match self_.undo_manager.pop(undo_type) {
@@ -332,54 +301,40 @@ impl DocumentEditorModel {
     }
 
     fn process_edit_command(&self, input_event: &InputEventParams) -> anyhow::Result<()> {
-        let current_value_vec = {
-            let self_ = self.inner.borrow();
-            self_
-                .current_value
-                .get_value_in_range(0..self_.current_value.value_len())?
-        };
+        let mut self_ = self.inner.borrow_mut();
         let (change_set, should_start_new_revision) = compute_change_set_from_input_event(
-            &self.inner.borrow().current_selection.clone().into(),
-            &current_value_vec,
+            &self_.current_selection,
+            self_.current_value.value_len() as u32,
             input_event,
         )?;
-        self.maybe_append_current_change_to_pending_log(should_start_new_revision)?;
-        let mut self_ = self.inner.borrow_mut();
-        if self_.current_change.is_none() {
-            self_.current_change = Some(CurrentChange {
-                change_set: change_set.clone(),
-                prior_selection: self_.current_selection.clone(),
-                prior_value: self_.current_value.clone(),
-                editable_until: Date::now() + MAX_CURRENT_CHANGE_EDITABLE_TIME,
-            });
+        let should_start_new_revision = should_start_new_revision
+            || self_.pending_log.is_empty()
+            || Date::now() > self_.last_pending_composable_until;
+        let inverted_change_set = self_.current_value.invert(&change_set)?;
+        if should_start_new_revision {
+            self_.pending_log.push_back(&change_set);
+            let selection_after = self_.current_selection.clone();
+            self_.undo_manager.push(
+                UndoType::Undo,
+                UndoItem {
+                    change_set: inverted_change_set,
+                    selection_after: selection_after,
+                },
+            );
+            self_.last_pending_composable_until = Date::now() + MAX_COMPOSABLE_TIME;
         } else {
-            let mut current_change = self_.current_change.as_mut().unwrap();
-            current_change.change_set = ot::compose(&current_change.change_set, &change_set)?;
+            let last_pending_change_set = self_.pending_log.back_mut().ok_or_else(|| {
+                DocumentEditorError::InvalidStateError(String::from("Unexpected empty pending log"))
+            })?;
+            *last_pending_change_set = ot::compose(&last_pending_change_set, &change_set)?;
+            let mut undo_item = self_.undo_manager.pop(UndoType::Undo).ok_or_else(|| {
+                DocumentEditorError::InvalidStateError(String::from("Unexpected empty undo stack"))
+            })?;
+            undo_item.change_set = ot::compose(&inverted_change_set, &undo_item.change_set)?;
+            self_.undo_manager.push(UndoType::Undo, undo_item);
         }
         self_.current_value.apply(&change_set)?;
         self_.current_selection = input_event.selection.into();
-        Ok(())
-    }
-
-    fn maybe_append_current_change_to_pending_log(&self, force: bool) -> anyhow::Result<()> {
-        let mut self_ = self.inner.borrow_mut();
-        if self_.current_change.is_none() {
-            return Ok(());
-        }
-        let current_change = self_.current_change.as_ref().unwrap();
-        let should_append = force || Date::now() > current_change.editable_until;
-        if !should_append {
-            return Ok(());
-        }
-        let current_change = self_.current_change.take().unwrap();
-        let undo_item = UndoItem {
-            change_set: current_change
-                .prior_value
-                .invert(&current_change.change_set)?,
-            selection_after: current_change.prior_selection.clone(),
-        };
-        self_.pending_log.push_back(&current_change.change_set);
-        self_.undo_manager.push(UndoType::Undo, undo_item);
         Ok(())
     }
 
@@ -516,11 +471,12 @@ pub fn get_change_set_description(change_set: &ChangeSet) -> String {
 type ShouldStartNewRevision = bool;
 
 fn compute_change_set_from_input_event(
-    prior_selection: &JsSelection,
-    prior_value: &[u16],
+    prior_selection: &Selection,
+    prior_value_len: u32,
     input_event: &InputEventParams,
 ) -> anyhow::Result<(ChangeSet, ShouldStartNewRevision)> {
-    let mut change_set = ChangeSet::new();
+    let prior_selection: JsSelection = prior_selection.clone().into();
+    let mut change_set = ChangeSet::with_capacity(4);
     let input_type = &input_event.input_type[..];
     let mut should_start_new_revision = prior_selection.length() > 0;
     match input_type {
@@ -528,7 +484,7 @@ fn compute_change_set_from_input_event(
             should_start_new_revision = true;
             change_set.retain(prior_selection.start.into());
             change_set.delete(prior_selection.length().into());
-            change_set.retain((prior_value.len() as u32 - prior_selection.end).into());
+            change_set.retain((prior_value_len - prior_selection.end).into());
         }
         "deleteContentBackward" | "deleteContentForward" => {
             if prior_selection.length() > 0 {
@@ -536,8 +492,7 @@ fn compute_change_set_from_input_event(
                 change_set.delete(prior_selection.length().into());
             } else {
                 change_set.retain(input_event.selection.start.into());
-                change_set
-                    .delete((prior_value.len() as u32 - input_event.target_value.length()).into());
+                change_set.delete((prior_value_len - input_event.target_value.length()).into());
             }
             change_set
                 .retain((input_event.target_value.length() - input_event.selection.end).into());
@@ -556,13 +511,13 @@ fn compute_change_set_from_input_event(
             change_set.retain(prior_selection.start.into());
             change_set.delete(prior_selection.length().into());
             change_set.insert_vec(js_string_to_vec_u32(&input_event.native_event_data));
-            change_set.retain((prior_value.len() as u32 - prior_selection.end).into());
+            change_set.retain((prior_value_len - prior_selection.end).into());
         }
         "insertLineBreak" => {
             should_start_new_revision = true;
             change_set.retain(prior_selection.start.into());
             change_set.insert("\n");
-            change_set.retain((prior_value.len() as u32 - prior_selection.end).into());
+            change_set.retain((prior_value_len - prior_selection.end).into());
         }
         _ => {
             let error_message = format!("Unknown input type: {}", input_type);
