@@ -18,7 +18,9 @@ use ot::writing_proto::{change_op::Op, ChangeSet, Selection};
 use ot::OtError;
 
 use crate::document_editor::committed_log::CommittedLog;
-use crate::document_editor::document_value::DocumentValue;
+use crate::document_editor::document_value::{
+    DocumentValue, DocumentValueChunkId, DocumentValueChunkVersion,
+};
 use crate::document_editor::pending_log::PendingLog;
 use crate::document_editor::undo_manager::{UndoItem, UndoManager, UndoType};
 
@@ -111,14 +113,27 @@ impl DocumentEditorModel {
             .current_value
             .get_value_in_range(0..self_.current_value.value_len())
             .unwrap();
-        if current_value.len() < (1usize << 16) {
-            JsString::from_char_code(&current_value)
-        } else {
-            let mut ret = JsString::from("");
-            for chunk in current_value.chunks(1usize << 16) {
-                ret = ret.concat(&JsString::from_char_code(chunk));
-            }
-            ret
+        slice_to_js_string(&current_value)
+    }
+
+    #[wasm_bindgen(js_name = getChunkIds)]
+    pub fn get_chunk_ids(&self) -> Vec<DocumentValueChunkId> {
+        let self_ = self.inner.borrow();
+        self_.current_value.get_chunk_ids()
+    }
+
+    #[wasm_bindgen(js_name = getChunkVersions)]
+    pub fn get_chunk_versions(&self) -> Vec<DocumentValueChunkVersion> {
+        let self_ = self.inner.borrow();
+        self_.current_value.get_chunk_versions()
+    }
+
+    #[wasm_bindgen(js_name = getChunkValue)]
+    pub fn get_chunk_value(&self, id: DocumentValueChunkId) -> JsValue {
+        let self_ = self.inner.borrow();
+        match self_.current_value.get_chunk(id) {
+            None => JsValue::NULL,
+            Some(chunk) => slice_to_js_string(&chunk.value).into(),
         }
     }
 
@@ -555,4 +570,16 @@ fn compute_change_set_from_input_event(
         }
     }
     Ok((change_set, should_start_new_revision))
+}
+
+fn slice_to_js_string(value: &[u16]) -> JsString {
+    if value.len() < (1usize << 16) {
+        JsString::from_char_code(value)
+    } else {
+        let mut ret = JsString::from("");
+        for chunk in value.chunks(1usize << 16) {
+            ret = ret.concat(&JsString::from_char_code(chunk));
+        }
+        ret
+    }
 }

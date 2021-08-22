@@ -1,6 +1,8 @@
 use std::cmp::Ordering;
 use std::ops::Range;
 
+use serde::Serialize;
+
 use ot::writing_proto::change_op::Op;
 use ot::writing_proto::ChangeSet;
 use ot::OtError;
@@ -11,15 +13,22 @@ pub struct DocumentValue {
     chunk_id_counter: DocumentValueChunkId,
 }
 
-type DocumentValueChunkId = usize;
-type DocumentValueChunkVersionId = usize;
+pub type DocumentValueChunkId = usize;
+pub type DocumentValueChunkVersion = usize;
 
 #[derive(Clone, Debug)]
 pub struct DocumentValueChunk {
     pub id: DocumentValueChunkId,
-    pub version: DocumentValueChunkVersionId,
+    pub version: DocumentValueChunkVersion,
     pub offset: usize,
     pub value: Vec<u16>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DocumentValueChunkMeta {
+    pub id: DocumentValueChunkId,
+    pub version: DocumentValueChunkVersion,
+    pub offset: usize,
 }
 
 impl DocumentValue {
@@ -48,7 +57,9 @@ impl DocumentValue {
             )));
         }
 
+        let original_chunks_len = self.chunks.len();
         let mut chunks_iter = std::mem::take(&mut self.chunks).into_iter();
+        self.chunks.reserve(original_chunks_len);
         let mut ops_iter = change_set.ops.iter();
 
         let mut temp_op: Option<Op>;
@@ -215,6 +226,23 @@ impl DocumentValue {
             start = chunk.offset + chunk.value.len();
         }
         Ok(value_in_range)
+    }
+
+    pub fn get_chunk_ids(&self) -> Vec<DocumentValueChunkId> {
+        self.chunks.iter().map(|chunk| chunk.id).collect()
+    }
+
+    pub fn get_chunk_versions(&self) -> Vec<DocumentValueChunkVersion> {
+        self.chunks.iter().map(|chunk| chunk.version).collect()
+    }
+
+    pub fn get_chunk(&self, id: DocumentValueChunkId) -> Option<&DocumentValueChunk> {
+        for i in 0..self.chunks.len() {
+            if self.chunks[i].id == id {
+                return Some(&self.chunks[i]);
+            }
+        }
+        None
     }
 
     fn append_chunk(&mut self, mut chunk: DocumentValueChunk) {

@@ -4,10 +4,11 @@ import React, {
   useState
 } from 'react';
 import './DocumentEditor.css';
+import DocumentValueChunk from './DocumentValueChunk';
 import { importWasm } from './importWasm';
+import { logPerformance } from './utils/performance';
 
 const DEBUG_LOGGING = false;
-const PERFORMANCE_LOGGING = true;
 const Z_KEY_CODE = 90;
 
 function DocumentEditor(props: any) {
@@ -19,6 +20,7 @@ function DocumentEditor(props: any) {
   const [documentEditorModel, _] = useState(() => {
     return DocumentEditorModel.new(props.docId);
   });
+  const [chunkMetas, setChunkMetas] = useState<Array<any>>([]);
   const [debugSelection, setDebugSelection] = useState(JsSelection.new(0, 0));
   const [debugLines, setDebugLines] = useState(new Array<string>());
 
@@ -32,7 +34,7 @@ function DocumentEditor(props: any) {
         const [getDocumentResponse, _] = await Promise.all([getDocumentPromise, syncPromise]);
         setTitle(getDocumentResponse.document.title);
         setLoaded(true);
-        syncDocumentValueAndSelection();
+        syncModelToView();
       } catch (e: any) {
         console.error(e);
       }
@@ -43,7 +45,6 @@ function DocumentEditor(props: any) {
   // Periodically run sync.
   useEffect(() => {
     let intervalId = setInterval(() => {
-      console.log('Running sync...');
       sync();
     }, 1000);
     return function () {
@@ -102,39 +103,43 @@ function DocumentEditor(props: any) {
   }
 
   function updateFromInputEvent(inputEventParams: any) {
-    if (PERFORMANCE_LOGGING) performance.mark("updateFromInputEventStart");
-    documentEditorModel.updateFromInputEvent(inputEventParams);
-    if (PERFORMANCE_LOGGING) performance.mark("updateFromInputEventEnd");
-    syncDocumentValueAndSelection();
+    logPerformance('updateFromInputEvent', () => {
+      documentEditorModel.updateFromInputEvent(inputEventParams);
+    });
+    syncModelToView();
   }
 
-  function syncDocumentValueAndSelection() {
+  function syncModelToView() {
     if (!textAreaElem.current) return;
-    if (PERFORMANCE_LOGGING) performance.mark("getValueStart");
-    textAreaElem.current.value = documentEditorModel.getValue();
-    if (PERFORMANCE_LOGGING) {
-      performance.mark("getValueEnd");
-      performance.measure("updateFromInputEvent", "updateFromInputEventStart", "updateFromInputEventEnd");
-      performance.measure("getValue", "getValueStart", "getValueEnd");
-      performance.getEntriesByType("measure").forEach((entry) => {
-        console.log(entry.name, `${entry.duration} ms`);
-      });
-      performance.clearMarks();
-      performance.clearMeasures();
+    const value = logPerformance('getValue', () => documentEditorModel.getValue());
+    if (textAreaElem.current.value !== value) {
+      textAreaElem.current.value = value;
     }
     const selection = documentEditorModel.getSelection();
-    textAreaElem.current.selectionStart = selection.start;
-    textAreaElem.current.selectionEnd = selection.end;
+    if (textAreaElem.current.selectionStart !== selection.start ||
+        textAreaElem.current.selectionEnd !== selection.end) {
+      textAreaElem.current.selectionStart = selection.start;
+      textAreaElem.current.selectionEnd = selection.end;
+    }
     setDebugSelection(selection);
     if (DEBUG_LOGGING) {
       setDebugLines(documentEditorModel.getDebugLines());
+    }
+    const ids = documentEditorModel.getChunkIds();
+    const versions = documentEditorModel.getChunkVersions();
+    if (ids.length === versions.length) {
+      const chunkMetas = new Array(ids.length);
+      ids.forEach((id: any, i: any) => {
+        chunkMetas[i] = { id: ids[i], version: versions[i] };
+      });
+      setChunkMetas(chunkMetas);
     }
   }
 
   async function sync() {
     try {
       await documentEditorModel.sync();
-      syncDocumentValueAndSelection();
+      syncModelToView();
       if (DEBUG_LOGGING) {
         setDebugLines(documentEditorModel.getDebugLines());
       }
@@ -171,6 +176,18 @@ function DocumentEditor(props: any) {
                 <li key={i}>{line}</li>
               )}
             </ul>
+          </div>
+          <div className="DocumentEditor-chunks">
+            {
+              chunkMetas.map((chunkMeta) =>
+                <DocumentValueChunk
+                  key={chunkMeta.id}
+                  id={chunkMeta.id}
+                  version={chunkMeta.version}
+                  model={documentEditorModel}
+                  />
+              )
+            }
           </div>
         </div>
       }
