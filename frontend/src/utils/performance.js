@@ -1,4 +1,4 @@
-const PERFORMANCE_LOGGING = true;
+const PERFORMANCE_LOGGING = false;
 
 function logPerformance(label, fn) {
   if (!PERFORMANCE_LOGGING) {
