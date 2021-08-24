@@ -1,6 +1,6 @@
 const PERFORMANCE_LOGGING = false;
 
-function logPerformance(label, fn) {
+function logPerformance(label: string, fn: () => any) : any {
   if (!PERFORMANCE_LOGGING) {
     return fn();
   } else {
